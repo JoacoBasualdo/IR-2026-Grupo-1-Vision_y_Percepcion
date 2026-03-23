@@ -42,29 +42,29 @@ RESULTS_DIR.mkdir(exist_ok=True)
 # La clave (key) sirve como identificador interno.
 # El valor visible se usa en la interfaz.
 AREA_1_TESTS = {
-    "exploracion_faro": "1. Exploración de Faro (Neglect)",
-    "anclaje_visual": "2. Anclaje Visual",
-    "complejidad_gradual": "3. Complejidad Gradual (DVC)",
-    "cancelacion_estimulos": "4. Cancelación de Estímulos",
-    "figura_fondo": "5. Figura-Fondo",
-    "acinetopsia": "6. Acinetopsia (Movimiento)",
+    "Exploracion de faro": "1. Exploración de Faro (Neglect)",
+    "Anclaje visual": "2. Anclaje Visual",
+    "Complejidad gradual": "3. Complejidad Gradual (DVC)",
+    "Cancelacion de estimulos": "4. Cancelación de Estímulos",
+    "Figura-fondo": "5. Figura-Fondo",
+    "Acinetopsia": "6. Acinetopsia (Movimiento)",
 }
 AREA_2_TESTS = {
-    "estabilizador_trayectoria": "7. Estabilizador de Trayectoria",
-    "ley_de_fitts": "8. Ley de Fitts",
-    "barrido_ritmico": "9. Barrido Rítmico (Scanning)",
-    "arrastre_sostenido": "10. Arrastre Sostenido (Drag & Drop)",
-    "reaccion_multimodal": "11. Reacción Multimodal",
-    "ganancia_adaptativa": "12. Ganancia Adaptativa",
+    "Estabilizador de trayectoria": "7. Estabilizador de Trayectoria",
+    "Ley de fitts": "8. Ley de Fitts",
+    "Barrido ritmico": "9. Barrido Rítmico (Scanning)",
+    "Arrastre sostenido": "10. Arrastre Sostenido (Drag & Drop)",
+    "Reaccion multimodal": "11. Reacción Multimodal",
+    "Ganancia adaptativa": "12. Ganancia Adaptativa",
 }
 
 AREA_3_TESTS = {
-    "denominacion_fonologica": "13. Denominación Fonológica",
-    "memoria_n_back": "14. Memoria N-Back",
-    "efecto_stroop": "15. Efecto Stroop (Inhibición)",
-    "completamiento_semantico": "16. Completamiento Semántico",
-    "intruso_logico": "17. Intruso Lógico",
-    "secuenciacion_avd": "18. Secuenciación AVD",
+    "Denominacion fonologica": "13. Denominación Fonológica",
+    "Memoria N-back": "14. Memoria N-Back",
+    "Efecto stroop": "15. Efecto Stroop (Inhibición)",
+    "Completamiento semantico": "16. Completamiento Semántico",
+    "Intruso logico": "17. Intruso Lógico",
+    "Secuenciacion AVD": "18. Secuenciación AVD",
 }
 
 
@@ -186,7 +186,7 @@ def run_pygame_test(patient_id: str, test_key: str, test_name: str):
 
     # Resultado final y path del JSON guardado.
     final_metric = None
-    final_unit = "aciertos"
+    final_unit = "Aciertos"
     saved_path = None
 
     def reset_targets():
