@@ -3021,9 +3021,9 @@ class OpenRehabApp:
             buttons_row,
             text="Área 1\nVisión y Percepción",
             font=("Arial", 13, "bold"),
-            bg=btn_primary,
+            bg="#4DA6FF",              # ← azul celeste
             fg="white",
-            activebackground=btn_primary_active,
+            activebackground="#3A8EDB",  # ← azul más oscuro al click
             activeforeground="white",
             relief="flat",
             bd=0,
