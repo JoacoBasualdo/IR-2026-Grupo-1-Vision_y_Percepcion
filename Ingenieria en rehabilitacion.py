@@ -186,7 +186,7 @@ def run_pygame_test(patient_id: str, test_key: str, test_name: str):
 
     # Resultado final y path del JSON guardado.
     final_metric = None
-    final_unit = "Aciertos"
+    final_unit = "aciertos"
     saved_path = None
 
     def reset_targets():
@@ -358,376 +358,257 @@ def run_pygame_test(patient_id: str, test_key: str, test_name: str):
 # =================================================================
 # CREACIÓN DE CADA MODO DE JUEGO
 # =================================================================
-def run_exploracion_faro_test(patient_id: str, test_key: str, test_name: str):
-    
+def run_exploracion_faro_test(patient_id: str, test_key: str, test_name: str, difficulty: int):
     pygame.init()
-
     width, height = 1200, 750
     screen = pygame.display.set_mode((width, height))
     pygame.display.set_caption(f"{APP_TITLE} - {test_name}")
-
     clock = pygame.time.Clock()
-
+    
     title_font = pygame.font.SysFont("arial", 34, bold=True)
     font = pygame.font.SysFont("arial", 24)
     small_font = pygame.font.SysFont("arial", 20)
 
+    # --- CONFIGURACIÓN DINÁMICA SEGÚN DIFICULTAD ---
+    if difficulty == 1:  # FÁCIL
+        flashlight_radius = random.randint(140, 160)
+        total_objects = random.randint(6, 8)
+        target_color = (80, 220, 120)  # Verde brillante
+        duration_seconds = 45
+    elif difficulty == 2:  # MEDIO
+        flashlight_radius = random.randint(95, 115)
+        total_objects = random.randint(12, 15)
+        target_color = (220, 220, 60)   # Amarillo
+        duration_seconds = 40
+    else:  # DIFÍCIL
+        flashlight_radius = random.randint(55, 75)
+        total_objects = random.randint(20, 25)
+        target_color = (65, 65, 70)    # Gris oscuro (Bajo contraste)
+        duration_seconds = 35
+
     state = "intro"
-    duration_seconds = 30
     start_ticks = None
-
-    flashlight_radius = 120
-    total_objects = 12
-
+    found_count = 0
     objects = []
 
-    found_count = 0
-    left_found = 0
-    right_found = 0
-    attempts = 1
-    saved_path = None
-    final_metric = 0
-    final_unit = "objetos_encontrados"
-
-    def generate_objects():
-
-        generated = []
-
-        left_count = total_objects // 2
-        right_count = total_objects - left_count
-
-        for _ in range(left_count):
-            generated.append({
-                "x": random.randint(80, width // 2 - 80),
-                "y": random.randint(140, height - 80),
-                "r": random.randint(18, 28),
-                "found": False,
-                "side": "left"
-            })
-
-        for _ in range(right_count):
-            generated.append({
-                "x": random.randint(width // 2 + 80, width - 80),
-                "y": random.randint(140, height - 80),
-                "r": random.randint(18, 28),
-                "found": False,
-                "side": "right"
-            })
-
-        return generated
-
-    objects = generate_objects()
-
-    def draw_intro():
-
-        screen.fill((12, 16, 24))
-
-        title = title_font.render(test_name, True, (240, 240, 240))
-        info1 = font.render(f"Paciente: {patient_id}", True, (255, 220, 120))
-        info2 = font.render("El cursor funciona como una linterna.", True, (220, 220, 220))
-        info3 = font.render("Explorá la pantalla y encontrá los objetos ocultos.", True, (220, 220, 220))
-        info4 = font.render("Hacé click cuando detectes un objeto.", True, (220, 220, 220))
-        info5 = font.render("Presioná ESPACIO para comenzar.", True, (120, 255, 180))
-        info6 = font.render("ESC para volver.", True, (255, 160, 160))
-
-        screen.blit(title, (60, 70))
-        screen.blit(info1, (60, 200))
-        screen.blit(info2, (60, 240))
-        screen.blit(info3, (60, 280))
-        screen.blit(info4, (60, 320))
-        screen.blit(info5, (60, 380))
-        screen.blit(info6, (60, 420))
-
-    def draw_playing():
-
-        screen.fill((18, 18, 18))
-
-        pygame.draw.rect(screen, (25, 25, 25), pygame.Rect(0, 0, width, 90))
-        pygame.draw.line(screen, (70, 70, 70), (width // 2, 90), (width // 2, height), 1)
-
-        elapsed = (pygame.time.get_ticks() - start_ticks) / 1000
-        remaining = max(0, duration_seconds - elapsed)
-
-        title = font.render(test_name, True, (255, 255, 255))
-        info = small_font.render(
-            f"Encontrados: {found_count}/{total_objects}   |   Tiempo restante: {remaining:0.1f}s",
-            True,
-            (255, 230, 120)
-        )
-
-        screen.blit(title, (20, 18))
-        screen.blit(info, (20, 55))
-
-        for obj in objects:
-            if obj["found"]:
-                pygame.draw.circle(screen, (80, 220, 120), (obj["x"], obj["y"]), obj["r"])
-
-        mouse_x, mouse_y = pygame.mouse.get_pos()
-
-        for obj in objects:
-            if obj["found"]:
-                continue
-
-            dx = mouse_x - obj["x"]
-            dy = mouse_y - obj["y"]
-            distance_sq = dx * dx + dy * dy
-
-            if distance_sq <= flashlight_radius * flashlight_radius:
-                pygame.draw.circle(screen, (240, 220, 90), (obj["x"], obj["y"]), obj["r"])
-
-        darkness = pygame.Surface((width, height), pygame.SRCALPHA)
-        darkness.fill((0, 0, 0, 210))
-
-        pygame.draw.circle(darkness, (0, 0, 0, 0), (mouse_x, mouse_y), flashlight_radius)
-
-        screen.blit(darkness, (0, 0))
-
-        pygame.draw.circle(screen, (255, 255, 180), (mouse_x, mouse_y), flashlight_radius, 2)
-
-    def draw_result():
-
-        screen.fill((16, 22, 30))
-
-        title = title_font.render("Resultado guardado", True, (220, 255, 220))
-        line1 = font.render(f"Métrica principal: {final_metric} {final_unit}", True, (240, 240, 240))
-        line2 = font.render("Presioná ENTER o ESC para volver.", True, (255, 220, 120))
-
-        screen.blit(title, (60, 100))
-        screen.blit(line1, (60, 200))
-        screen.blit(line2, (60, 300))
+    # Generación de objetos (Mitad izquierda, mitad derecha para evaluar Neglect)
+    for i in range(total_objects):
+        side = "left" if i < total_objects // 2 else "right"
+        x_min = 80 if side == "left" else width // 2 + 80
+        x_max = width // 2 - 80 if side == "left" else width - 80
+        objects.append({
+            "x": random.randint(x_min, x_max),
+            "y": random.randint(140, height - 80),
+            "r": random.randint(20, 28),
+            "found": False,
+            "side": side
+        })
 
     running = True
-
     while running:
+        screen.fill((18, 18, 18))
+        mx, my = pygame.mouse.get_pos()
 
         for event in pygame.event.get():
-
-            if event.type == pygame.QUIT:
-                running = False
-
+            if event.type == pygame.QUIT: running = False
             elif event.type == pygame.KEYDOWN:
-
-                if event.key == pygame.K_ESCAPE:
-                    running = False
-
-                elif state == "intro" and event.key == pygame.K_SPACE:
-                    state = "playing"
-                    start_ticks = pygame.time.get_ticks()
-
-                elif state == "result" and event.key == pygame.K_RETURN:
-                    running = False
-
+                if event.key == pygame.K_ESCAPE: running = False
+                if state == "intro" and event.key == pygame.K_SPACE:
+                    state = "playing"; start_ticks = pygame.time.get_ticks()
+                if state == "result" and event.key == pygame.K_RETURN: running = False
+            
+            # --- DETECCIÓN DE CLICKS CORREGIDA ---
             elif event.type == pygame.MOUSEBUTTONDOWN and state == "playing":
-
-                mouse_x, mouse_y = event.pos
-
+                click_x, click_y = event.pos
                 for obj in objects:
-
-                    if obj["found"]:
-                        continue
-
-                    dx = mouse_x - obj["x"]
-                    dy = mouse_y - obj["y"]
-                    inside = (dx * dx + dy * dy) <= (obj["r"] * obj["r"])
-
-                    if inside:
-                        obj["found"] = True
-                        found_count += 1
-
-                        if obj["side"] == "left":
-                            left_found += 1
-                        else:
-                            right_found += 1
-                        break
-
-        if state == "playing":
-
-            elapsed = (pygame.time.get_ticks() - start_ticks) / 1000
-
-            if found_count == total_objects or elapsed >= duration_seconds:
-
-                final_metric = found_count
-
-                saved_path = save_result_json(
-                    patient_id,
-                    test_key,
-                    final_metric,
-                    final_unit,
-                    attempts
-                )
-
-                state = "result"
+                    if not obj["found"]:
+                        # Pitágoras para colisión circular exacta
+                        dist = ((click_x - obj["x"])**2 + (click_y - obj["y"])**2)**0.5
+                        if dist <= obj["r"]: 
+                            obj["found"] = True
+                            found_count += 1
+                            break
 
         if state == "intro":
-            draw_intro()
-
+            screen.blit(title_font.render(f"{test_name} (Nivel {difficulty})", True, (255,255,255)), (60, 70))
+            screen.blit(font.render("Presioná ESPACIO para comenzar", True, (120, 255, 180)), (60, 200))
+        
         elif state == "playing":
-            draw_playing()
+            elapsed = (pygame.time.get_ticks() - start_ticks) / 1000
+            remaining = max(0, duration_seconds - elapsed)
+            
+            for obj in objects:
+                dist_luz = ((mx - obj["x"])**2 + (my - obj["y"])**2)**0.5
+                if obj["found"]:
+                    pygame.draw.circle(screen, (80, 220, 120), (obj["x"], obj["y"]), obj["r"])
+                elif dist_luz <= flashlight_radius:
+                    pygame.draw.circle(screen, target_color, (obj["x"], obj["y"]), obj["r"])
+
+            darkness = pygame.Surface((width, height), pygame.SRCALPHA)
+            darkness.fill((0, 0, 0, 240))
+            pygame.draw.circle(darkness, (0, 0, 0, 0), (mx, my), flashlight_radius)
+            screen.blit(darkness, (0, 0))
+            pygame.draw.circle(screen, (200, 200, 200), (mx, my), flashlight_radius, 2)
+            
+            if found_count == total_objects or remaining <= 0:
+                save_result_json(patient_id, test_key, found_count, "objetos", 1)
+                state = "result"
 
         elif state == "result":
-            draw_result()
+            screen.blit(title_font.render("¡Test Finalizado!", True, (255,255,255)), (60, 100))
+            screen.blit(font.render(f"Objetivos encontrados: {found_count}", True, (240,240,240)), (60, 180))
+            screen.blit(font.render("ENTER para volver", True, (255, 220, 120)), (60, 260))
 
         pygame.display.flip()
         clock.tick(60)
-
     pygame.quit()
 
-def run_anclaje_visual_test(patient_id: str, test_key: str, test_name: str):
+def run_anclaje_visual_test(patient_id: str, test_key: str, test_name: str, difficulty: int):
     
     pygame.init()
-
     width, height = 1200, 750
     screen = pygame.display.set_mode((width, height))
     pygame.display.set_caption(f"{APP_TITLE} - {test_name}")
-
     clock = pygame.time.Clock()
+    
+    # Fuentes para mayor legibilidad y estética
+    font_main = pygame.font.SysFont("arial", 28)
+    font_button = pygame.font.SysFont("arial", 24, bold=True)
+    font_title = pygame.font.SysFont("arial", 36, bold=True)
 
-    font = pygame.font.SysFont("arial", 28)
-    title_font = pygame.font.SysFont("arial", 36, bold=True)
+    # --- CONFIGURACIÓN DE TEXTOS Y PARÁMETROS SEGÚN DIFICULTAD ---
+    if difficulty == 1: # FÁCIL
+        sentences = [
+            "El sol sale cada mañana.", "La casa es de color azul.",
+            "El gato duerme en el sofa.", "Tengo una manzana roja.",
+            "El agua esta muy fria."
+        ]
+        blink_speed = 35 
+        # Rangos de tamaño (más grandes)
+        w_range = (40, 60); h_range = (350, 450)
+        # Rango de posición (muy a la izquierda)
+        x_range = (10, 30); y_range = (120, 180)
+        
+    elif difficulty == 2: # MEDIO
+        sentences = [
+            "La rehabilitacion requiere constancia y paciencia.",
+            "Es importante realizar los ejercicios cada dia.",
+            "El sistema visual procesa mucha informacion compleja.",
+            "Caminar por el parque mejora el estado de animo.",
+            "La tecnologia ayuda a recuperar funciones perdidas."
+        ]
+        blink_speed = 20
+        w_range = (20, 35); h_range = (250, 350)
+        # Rango de posición (un poco más hacia el centro-izquierda)
+        x_range = (10, 60); y_range = (100, 250)
+        
+    else: # DIFÍCIL (Alto desafío visual)
+        sentences = [
+            "El lóbulo parietal derecho es fundamental para la atencion espacial y el procesamiento visual.",
+            "El neglect es un trastorno neurologico donde se ignora informacion de un sector del espacio.",
+            "Las dificultades en el procesamiento visual complejo involucran problemas en las vias corticales.",
+            "La plasticidad cerebral permite que el cerebro se adapte y recupere capacidades tras un ACV.",
+            "El entrenamiento constante del anclaje visual mejora la autonomia en las actividades diarias."
+        ]
+        blink_speed = 10 
+        w_range = (8, 18); h_range = (150, 250)
+        # Rango de posición (mayor dispersión en el cuadrante izquierdo)
+        x_range = (10, 100); y_range = (80, 400)
 
+    # Variables de estado del juego
     state = "intro"
-
-    trials = 6
     current_trial = 0
+    bar_active = False # Controla si el texto es visible
+    timer = 0
+    num_trials = 5
+    
+    # Variables de la barra (se inicializan vacías)
+    current_bar_rect = pygame.Rect(0, 0, 0, 0)
 
-    bar_clicked = False
+    # Función interna para reposicionar la barra aleatoriamente
+    def randomize_bar():
+        nonlocal current_bar_rect
+        w = random.randint(w_range[0], w_range[1])
+        h = random.randint(h_range[0], h_range[1])
+        x = random.randint(x_range[0], x_range[1])
+        y = random.randint(y_range[0], y_range[1])
+        current_bar_rect = pygame.Rect(x, y, w, h)
 
-    start_ticks = None
-
-    attempts = 1
-    saved_path = None
-    final_metric = 0
-    final_unit = "anclajes_correctos"
-
-    sentences = [
-        "El perro corre en el parque.",
-        "La casa tiene una puerta azul.",
-        "Hoy el clima está muy agradable.",
-        "El tren llega a la estación.",
-        "Los niños juegan en el patio.",
-        "La doctora revisa al paciente."
-    ]
-
-    bar_flash_timer = 0
-
-    def draw_intro():
-
-        screen.fill((20, 24, 32))
-
-        title = title_font.render(test_name, True, (240,240,240))
-        info1 = font.render("Tocá la barra roja del lado izquierdo para habilitar el texto.", True, (220,220,220))
-        info2 = font.render("Esto entrena la atención al margen izquierdo.", True, (220,220,220))
-        info3 = font.render("Presioná ESPACIO para comenzar.", True, (120,255,180))
-
-        screen.blit(title,(60,80))
-        screen.blit(info1,(60,200))
-        screen.blit(info2,(60,250))
-        screen.blit(info3,(60,350))
-
-    def draw_playing():
-
-        nonlocal bar_flash_timer
-
-        screen.fill((240,240,240))
-
-        pygame.draw.rect(screen,(230,230,230),(0,0,width,80))
-
-        title = font.render(f"Intento {current_trial+1} / {trials}",True,(20,20,20))
-        screen.blit(title,(20,25))
-
-        bar_flash_timer += 1
-
-        bar_color = (255,60,60)
-
-        if (bar_flash_timer//30)%2 == 0:
-            pygame.draw.rect(screen,bar_color,(20,150,30,400))
-
-        if bar_clicked:
-
-            text_surface = font.render(sentences[current_trial],True,(0,0,0))
-            screen.blit(text_surface,(200,300))
-
-            pygame.draw.rect(screen,(80,160,255),(900,500,180,60))
-            next_text = font.render("Siguiente",True,(255,255,255))
-            screen.blit(next_text,(930,515))
-
-    def draw_result():
-
-        screen.fill((20,30,40))
-
-        title = title_font.render("Resultado guardado",True,(220,255,220))
-        line1 = font.render(f"Métrica principal: {final_metric}",True,(240,240,240))
-        line2 = font.render("ENTER o ESC para volver",True,(255,220,120))
-
-        screen.blit(title,(80,120))
-        screen.blit(line1,(80,240))
-        screen.blit(line2,(80,320))
+    # Generamos la primera posición
+    randomize_bar()
 
     running = True
-
     while running:
+        screen.fill((245, 245, 245)) # Fondo claro (Alto Contraste)
+        mx, my = pygame.mouse.get_pos()
 
         for event in pygame.event.get():
-
             if event.type == pygame.QUIT:
-                running=False
-
+                running = False
             elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE: running = False
+                if state == "intro" and event.key == pygame.K_SPACE: state = "playing"
+                if state == "result" and event.key == pygame.K_RETURN: running = False
+            
+            elif event.type == pygame.MOUSEBUTTONDOWN and state == "playing":
+                # 1. Tocar la barra de anclaje (usamos collidepoint para colisión exacta)
+                if not bar_active:
+                    if current_bar_rect.collidepoint(mx, my):
+                        bar_active = True
+                        
+                # 2. Presionar el botón Siguiente
+                elif 900 <= mx <= 1100 and 550 <= my <= 630:
+                    current_trial += 1
+                    bar_active = False
+                    if current_trial < num_trials:
+                        # Reposicionar la barra para el siguiente intento
+                        randomize_bar()
+                    else:
+                        save_result_json(patient_id, test_key, num_trials, "anclajes", 1)
+                        state = "result"
 
-                if event.key == pygame.K_ESCAPE:
-                    running=False
+        if state == "intro":
+            screen.blit(font_title.render(f"Test: {test_name}", True, (30, 30, 30)), (60, 80))
+            screen.blit(font_main.render("Instruccion: Toca la barra parpadeante", True, (50, 50, 50)), (60, 180))
+            screen.blit(font_main.render("a la izquierda para habilitar el texto.", True, (50, 50, 50)), (60, 220))
+            screen.blit(font_button.render("PRESIONA ESPACIO PARA INICIAR", True, (0, 150, 0)), (60, 350))
+        
+        elif state == "playing":
+            # Barra de progreso estética
+            pygame.draw.rect(screen, (200, 200, 200), (20, 20, 1160, 10))
+            pygame.draw.rect(screen, (72, 211, 154), (20, 20, (current_trial/num_trials)*1160, 10))
 
-                elif state=="intro" and event.key==pygame.K_SPACE:
-                    state="playing"
-                    start_ticks = pygame.time.get_ticks()
+            # Dibujar la barra roja (parpadeo variable según dificultad)
+            timer += 1
+            if not bar_active: # Solo parpadea si no ha sido tocada
+                if (timer // blink_speed) % 2 == 0:
+                    pygame.draw.rect(screen, (255, 0, 0), current_bar_rect, border_radius=5)
+            else:
+                # Si ya se tocó, dibujarla fija en verde para indicar éxito
+                pygame.draw.rect(screen, (40, 180, 80), current_bar_rect, border_radius=5)
+                
+                # Mostrar texto complejo (centrado respecto a la barra habilitada)
+                txt_surf = font_main.render(sentences[current_trial % len(sentences)], True, (0, 0, 0))
+                # Ajustamos la X del texto para que no pise la barra si esta se mueve muy a la derecha
+                text_x = max(150, current_bar_rect.right + 30)
+                screen.blit(txt_surf, (text_x, current_bar_rect.centery - 15))
+                
+                # Botón "Siguiente" visible y estético
+                btn_rect = pygame.Rect(900, 550, 200, 80)
+                # Sombra y cuerpo del botón
+                pygame.draw.rect(screen, (40, 40, 40), (905, 555, 200, 80), border_radius=15)
+                pygame.draw.rect(screen, (0, 123, 255), btn_rect, border_radius=15)
+                btn_txt = font_button.render("SIGUIENTE", True, (255, 255, 255))
+                screen.blit(btn_txt, (935, 575))
 
-                elif state=="result" and event.key==pygame.K_RETURN:
-                    running=False
-
-            elif event.type == pygame.MOUSEBUTTONDOWN and state=="playing":
-
-                mouse_x, mouse_y = event.pos
-
-                if not bar_clicked:
-
-                    if 20 <= mouse_x <= 50 and 150 <= mouse_y <= 550:
-                        bar_clicked=True
-
-                else:
-
-                    if 900 <= mouse_x <= 1080 and 500 <= mouse_y <= 560:
-
-                        current_trial +=1
-                        bar_clicked=False
-
-                        if current_trial >= trials:
-
-                            final_metric = trials
-
-                            saved_path = save_result_json(
-                                patient_id,
-                                test_key,
-                                final_metric,
-                                final_unit,
-                                attempts
-                            )
-
-                            state="result"
-
-        if state=="intro":
-            draw_intro()
-
-        elif state=="playing":
-            draw_playing()
-
-        elif state=="result":
-            draw_result()
+        elif state == "result":
+            screen.blit(font_title.render("¡Tarea Completada!", True, (0, 100, 0)), (60, 100))
+            screen.blit(font_main.render(f"Se han completado {num_trials} lecturas con exito.", True, (30, 30, 30)), (60, 180))
+            screen.blit(font_button.render("PRESIONA ENTER PARA VOLVER AL MENU", True, (0, 102, 204)), (60, 300))
 
         pygame.display.flip()
         clock.tick(60)
-
     pygame.quit()
-
 def run_complejidad_gradual_test(patient_id: str, test_key: str, test_name: str):
     
     pygame.init()
@@ -3140,9 +3021,9 @@ class OpenRehabApp:
             buttons_row,
             text="Área 1\nVisión y Percepción",
             font=("Arial", 13, "bold"),
-            bg="#4DA6FF",              # ← azul celeste
+            bg=btn_primary,
             fg="white",
-            activebackground="#3A8EDB",  # ← azul más oscuro al click
+            activebackground=btn_primary_active,
             activeforeground="white",
             relief="flat",
             bd=0,
@@ -4082,11 +3963,12 @@ class OpenRehabApp:
 
 
     # --------------------------------------------------------
-    # LANZAR EL TEST ELEGIDO EN PYGAME
+    # SELECCIÓN DE DIFICULTAD
     # --------------------------------------------------------
+
     def launch_selected_test(self, patient_id: str):
         test_key = self.selected_test_var.get()
-
+        
         if self.current_area_key.get() == "area1":
             tests_dict = AREA_1_TESTS
         elif self.current_area_key.get() == "area2":
@@ -4095,14 +3977,97 @@ class OpenRehabApp:
             tests_dict = AREA_3_TESTS
 
         test_name = tests_dict[test_key]
+        
+        # En lugar de ejecutar, vamos a la nueva pantalla
+        self.build_difficulty_selector(patient_id, test_key, test_name)
+        
+        
+    def build_difficulty_selector(self, patient_id: str, test_key: str, test_name: str):
+        self.clear_main()
+        
+        bg_main = "#0A2540"
+        bg_card = "#163A63"
+        text_primary = "#F4F8FC"
+        btn_secondary = "#243B53"
 
+        outer = tk.Frame(self.main_container, bg=bg_main)
+        outer.pack(fill="both", expand=True)
+
+        header = tk.Frame(outer, bg=bg_main)
+        header.pack(pady=(50, 20))
+
+        tk.Label(
+            header, 
+            text="Configuración del Test", 
+            font=("Arial", 24, "bold"), 
+            fg=text_primary, bg=bg_main
+        ).pack()
+        
+        tk.Label(
+            header, 
+            text=f"Actividad: {test_name}", 
+            font=("Arial", 14), 
+            fg="#C7D9EA", bg=bg_main
+        ).pack(pady=10)
+
+        card = tk.Frame(outer, bg=bg_card, highlightthickness=1, highlightbackground="#2B5C88")
+        card.pack(pady=20, padx=50, ipadx=40, ipady=40)
+
+        tk.Label(
+            card, 
+            text="Seleccioná el nivel de dificultad", 
+            font=("Arial", 16, "bold"), 
+            fg="white", bg=bg_card
+        ).pack(pady=(0, 30))
+
+        # Estilo de botones de dificultad
+        diff_settings = [
+            ("Fácil", "#72D39A", 1),      # Texto, Color, Valor numérico
+            ("Medio", "#FBC02D", 2),
+            ("Difícil", "#F44336", 3)
+        ]
+
+        for text, color, val in diff_settings:
+            tk.Button(
+                card,
+                text=text,
+                font=("Arial", 14, "bold"),
+                bg=color,
+                fg="white",
+                width=20,
+                cursor="hand2",
+                relief="flat",
+                # Aquí llamamos a la ejecución real del juego
+                command=lambda v=val: self.execute_pygame_with_difficulty(patient_id, test_key, test_name, v)
+            ).pack(pady=10, ipady=5)
+
+        tk.Button(
+            outer,
+            text="Cancelar y volver",
+            font=("Arial", 12),
+            bg=btn_secondary,
+            fg="white",
+            relief="flat",
+            command=lambda: self.build_area_selector(patient_id)
+        ).pack(pady=20)   
+
+    def execute_pygame_with_difficulty(self, patient_id, test_key, test_name, difficulty):
+        """
+        Lanza el juego de Pygame cerrando temporalmente la ventana de Tkinter.
+        Pasa el parámetro 'difficulty' a los juegos que ya están actualizados.
+        """
+        # Ocultamos la ventana principal de Tkinter
         self.root.withdraw()
+        
         try:
+            # --- ÁREA 1: VISIÓN Y PERCEPCIÓN ---
             if test_key == "exploracion_faro":
-                    run_exploracion_faro_test(patient_id, test_key, test_name)
+                # Juego actualizado con rangos aleatorios y dificultad
+                run_exploracion_faro_test(patient_id, test_key, test_name, difficulty)
 
             elif test_key == "anclaje_visual":
-                run_anclaje_visual_test(patient_id, test_key, test_name)
+                # Juego actualizado con parpadeo y ancho variable
+                run_anclaje_visual_test(patient_id, test_key, test_name, difficulty)
 
             elif test_key == "complejidad_gradual":
                 run_complejidad_gradual_test(patient_id, test_key, test_name)
@@ -4116,6 +4081,7 @@ class OpenRehabApp:
             elif test_key == "acinetopsia":
                 run_acinetopsia_test(patient_id, test_key, test_name)
 
+            # --- ÁREA 2: CONTROL MOTOR Y ACCESO ---
             elif test_key == "estabilizador_trayectoria":
                 run_estabilizador_trayectoria_test(patient_id, test_key, test_name)
 
@@ -4134,7 +4100,7 @@ class OpenRehabApp:
             elif test_key == "ganancia_adaptativa":
                 run_ganancia_adaptativa_test(patient_id, test_key, test_name)
 
-
+            # --- ÁREA 3: COGNICIÓN Y LENGUAJE ---
             elif test_key == "denominacion_fonologica":
                 run_denominacion_fonologica_test(patient_id, test_key, test_name)
 
@@ -4153,21 +4119,21 @@ class OpenRehabApp:
             elif test_key == "secuenciacion_avd":
                 run_secuenciacion_avd_test(patient_id, test_key, test_name)
 
-
             else:
+                # Caso por defecto si el test no tiene una función específica
                 run_pygame_test(patient_id, test_key, test_name)
 
         finally:
-        
+            # Volvemos a mostrar la ventana de Tkinter al cerrar Pygame
             self.root.deiconify()
-
+            
+            # Recargamos el menú del área correspondiente para ver los nuevos resultados
             if self.current_area_key.get() == "area1":
-                    self.build_area1_menu(patient_id)
+                self.build_area1_menu(patient_id)
             elif self.current_area_key.get() == "area2":
-                    self.build_area2_menu(patient_id)
+                self.build_area2_menu(patient_id)
             else:
-                    self.build_area3_menu(patient_id)
-
+                self.build_area3_menu(patient_id)
 
 # ============================================================
 # PUNTO DE ENTRADA
