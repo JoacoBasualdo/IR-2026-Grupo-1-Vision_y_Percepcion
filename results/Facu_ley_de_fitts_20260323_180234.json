@@ -1,0 +1,8 @@
+{
+    "id_paciente": "Facu",
+    "fecha": "2026-03-23 18:02:34",
+    "test": "ley_de_fitts",
+    "metrica_principal": 9,
+    "unidad": "aciertos",
+    "intentos": 1
+}
