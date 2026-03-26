@@ -1,0 +1,8 @@
+{
+    "id_paciente": "fACU",
+    "fecha": "2026-03-26 13:25:46",
+    "test": "complejidad_gradual",
+    "metrica_principal": 6,
+    "unidad": "niveles_superados",
+    "intentos": 1
+}

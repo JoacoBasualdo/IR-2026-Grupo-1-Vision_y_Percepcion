@@ -1,0 +1,8 @@
+{
+    "id_paciente": "FACU",
+    "fecha": "2026-03-25 16:16:45",
+    "test": "exploracion_faro",
+    "metrica_principal": 15,
+    "unidad": "objetos",
+    "intentos": 1
+}
