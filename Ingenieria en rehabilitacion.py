@@ -1314,7 +1314,7 @@ def run_figura_fondo_test(patient_id: str, test_key: str, test_name: str, diffic
 
     pygame.quit()
 
-def run_acinetopsia_test(patient_id: str, test_key: str, test_name: str):
+def run_acinetopsia_test(patient_id: str, test_key: str, test_name: str, difficulty: int):
     
     pygame.init()
 
@@ -1360,7 +1360,16 @@ def run_acinetopsia_test(patient_id: str, test_key: str, test_name: str):
         )
 
     def draw_playing():
-        screen.fill((240, 240, 240))
+        bg = 240
+
+        if difficulty == 1:        # fácil
+            delta = -140
+        elif difficulty == 2:      # medio
+            delta = -80
+        else:                      # difícil
+            delta = -40
+
+        screen.fill((bg, bg, bg))
 
         elapsed = (pygame.time.get_ticks() - start_ticks) / 1000
         remaining = max(0, duration_seconds - elapsed)
@@ -1373,9 +1382,15 @@ def run_acinetopsia_test(patient_id: str, test_key: str, test_name: str):
 
         for target in targets:
             if target["active"]:
-                pygame.draw.circle(screen, (60, 140, 255), (int(target["x"]), int(target["y"])), target["r"])
-                pygame.draw.circle(screen, (20, 20, 20), (int(target["x"]), int(target["y"])), target["r"], 2)
+                # color del círculo (relleno)
+                circle_color = tuple(max(0, min(255, bg + delta)) for _ in range(3))
 
+                # el borde tiene MENOS contraste que el relleno
+                border_delta = int(delta * 0.5)
+                border_color = tuple(max(0, min(255, bg + border_delta)) for _ in range(3))
+
+                pygame.draw.circle(screen, circle_color, (int(target["x"]), int(target["y"])), target["r"])
+                pygame.draw.circle(screen, border_color, (int(target["x"]), int(target["y"])), target["r"], 2)
     def draw_result():
         draw_openrehab_result_screen(
             screen,
@@ -1424,6 +1439,18 @@ def run_acinetopsia_test(patient_id: str, test_key: str, test_name: str):
                     if inside:
                         target["active"] = False
                         final_metric += 1
+
+                    # TERMINAR SI YA CAPTURÓ TODOS
+                        if final_metric >= len(targets):
+                            save_result_json(
+                                patient_id,
+                                test_key,
+                                final_metric,
+                                final_unit,
+                                attempts
+                            )
+                            state = "result"
+
                         break
 
         if state == "playing":
@@ -4505,7 +4532,7 @@ class OpenRehabApp:
                 run_figura_fondo_test(patient_id, test_key, test_name, difficulty)
 
             elif test_key == "acinetopsia":
-                run_acinetopsia_test(patient_id, test_key, test_name)
+                run_acinetopsia_test(patient_id, test_key, test_name, difficulty)
 
             # --- ÁREA 2: CONTROL MOTOR Y ACCESO ---
             elif test_key == "estabilizador_trayectoria":
