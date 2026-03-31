@@ -1,0 +1,14 @@
+{
+    "id_paciente": "Facu",
+    "fecha": "2026-03-31 15:52:03",
+    "test": "exploracion_faro",
+    "metricas": {
+        "lat": 0.74,
+        "om_i": 0,
+        "om_d": 0,
+        "red": 1,
+        "msg": "¡Excelente rendimiento! Dominio visual total.",
+        "rango": "EXCELENTE"
+    },
+    "intentos": 1
+}

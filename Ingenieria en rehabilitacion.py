@@ -134,6 +134,110 @@ def get_last_result_for_test(patient_id: str, test_key: str):
     return None
 
 
+def get_metric_summary(result: dict) -> str:
+    """
+    Devuelve un resumen corto y legible de las métricas para mostrar en historial/comparación.
+    """
+    metricas = result.get("metricas", {}) or {}
+
+    priority_keys = [
+        "correctas", "encontrados", "lat", "val", "tiempo", "porcentaje",
+        "om_i", "hits", "desvios", "niveles_superados", "clicks_totales"
+    ]
+    labels = {
+        "correctas": "Correctas",
+        "incorrectas": "Incorrectas",
+        "encontrados": "Encontrados",
+        "no_encontrados": "No encontrados",
+        "lat": "Latencia",
+        "val": "Validez",
+        "tiempo": "Tiempo",
+        "tiempo_promedio": "Tiempo prom.",
+        "porcentaje": "Acierto",
+        "om_i": "Omisiones izq.",
+        "om_d": "Omisiones der.",
+        "red": "Redundancia",
+        "clicks_totales": "Clicks",
+        "misclicks": "Misclicks",
+        "prec": "Precisión",
+        "lect": "Lectura",
+        "msg": "Mensaje",
+        "rango": "Rango",
+    }
+
+    parts = []
+    for key in priority_keys:
+        if key in metricas:
+            value = metricas[key]
+            if key == "porcentaje":
+                value = f"{value}%"
+            elif key in ("tiempo", "tiempo_promedio", "lat", "lect"):
+                value = f"{value}s"
+            parts.append(f"{labels.get(key, key)}: {value}")
+        if len(parts) >= 2:
+            break
+
+    if not parts and metricas:
+        first_items = list(metricas.items())[:2]
+        for key, value in first_items:
+            parts.append(f"{labels.get(key, key)}: {value}")
+
+    return " | ".join(parts) if parts else "Sin métricas disponibles"
+
+
+def build_report_lines(result: dict) -> list[str]:
+    """
+    Convierte el JSON guardado en una lista de líneas para visualizar como informe.
+    """
+    metricas = result.get("metricas", {}) or {}
+    labels = {
+        "correctas": "Figuras correctas",
+        "incorrectas": "Figuras incorrectas",
+        "total": "Total",
+        "tiempo": "Tiempo total",
+        "tiempo_promedio": "Tiempo promedio",
+        "porcentaje": "Porcentaje de acierto",
+        "encontrados": "Objetivos encontrados",
+        "no_encontrados": "Objetivos no encontrados",
+        "clicks_totales": "Clicks totales",
+        "misclicks": "Misclicks",
+        "lat": "Latencia al primer hallazgo",
+        "om_i": "Omisiones lado izquierdo",
+        "om_d": "Omisiones lado derecho",
+        "red": "Redundancia",
+        "prec": "Precisión motora",
+        "val": "Validez de voz",
+        "lect": "Tiempo de lectura",
+        "rango": "Rango",
+        "msg": "Interpretación",
+    }
+
+    lines = [
+        f"Paciente: {result.get('id_paciente', '-')}",
+        f"Fecha: {result.get('fecha', '-')}",
+        f"Test: {result.get('test', '-')}",
+        ""
+    ]
+
+    for key, value in metricas.items():
+        if key == "tiempo_maximo":
+            continue
+        if key == "porcentaje":
+            display = f"{value}%"
+        elif key in ("tiempo", "tiempo_promedio", "lat", "lect"):
+            display = f"{value}s"
+        elif key == "val":
+            display = f"{value}%"
+        else:
+            display = value
+        lines.append(f"{labels.get(key, key)}: {display}")
+
+    if len(lines) == 4:
+        lines.append("No hay métricas detalladas disponibles para este resultado.")
+
+    return lines
+
+
 
 OPENREHAB_PYGAME_THEME = {
     "bg_main": (10, 37, 64),
@@ -496,8 +600,7 @@ def run_pygame_test(patient_id: str, test_key: str, test_name: str):
                 saved_path = save_result_json(
                     patient_id=patient_id,
                     test_key=test_key,
-                    metric_value=final_metric,
-                    unit=final_unit,
+                    metrics_dict={"aciertos": final_metric, "errores": misses},
                     attempts=attempts,
                 )
                 state = "result"
@@ -1033,8 +1136,7 @@ def run_complejidad_gradual_test(patient_id: str, test_key: str, test_name: str)
                         saved_path = save_result_json(
                             patient_id,
                             test_key,
-                            final_metric,
-                            final_unit,
+                            {"niveles_superados": final_metric},
                             attempts
                         )
                         state = "result"
@@ -1201,8 +1303,7 @@ def run_cancelacion_estimulos_test(patient_id: str, test_key: str, test_name: st
                 save_result_json(
                     patient_id,
                     test_key,
-                    final_metric,
-                    final_unit,
+                    {final_unit: final_metric},
                     attempts
                 )
                 state = "result"
@@ -1219,36 +1320,44 @@ def run_cancelacion_estimulos_test(patient_id: str, test_key: str, test_name: st
 
     pygame.quit()
 
+
+
 def run_figura_fondo_test(patient_id: str, test_key: str, test_name: str, difficulty: int):
-    
     pygame.init()
 
     width, height = 1200, 750
     screen = pygame.display.set_mode((width, height))
     pygame.display.set_caption(f"{APP_TITLE} - {test_name}")
-
     clock = pygame.time.Clock()
 
-    title_font = pygame.font.SysFont("arial", 34, bold=True)
     font = pygame.font.SysFont("arial", 24)
+    font_hud = pygame.font.SysFont("arial", 26, bold=True)
+    font_giant = pygame.font.SysFont("arial", 80, bold=True)
+    font_button = pygame.font.SysFont("arial", 24, bold=True)
+    font_report = pygame.font.SysFont("arial", 22)
 
     state = "intro"
+    show_report = False
     attempts = 1
-    final_metric = 0
-    final_unit = "figuras_detectadas"
 
     rounds = 5
     current_round = 0
+    correct_count = 0
+    incorrect_count = 0
+    start_ticks = None
+    total_time = 0.0
+    avg_time = 0.0
+    final_metrics = {}
 
     target_rect = pygame.Rect(0, 0, 0, 0)
     buttons = []
-
     target_shape = "rect"
-    
+
+    btn_reporte = pygame.Rect(width // 2 - 220, height - 130, 210, 55)
+    btn_volver = pygame.Rect(width // 2 + 10, height - 130, 210, 55)
+    btn_cerrar = pygame.Rect(width // 2 - 100, 560, 200, 45)
+
     def generate_round():
-        """
-        Genera una figura de bajo contraste y opciones de respuesta.
-        """
         nonlocal target_rect, buttons, target_shape
 
         x = random.randint(220, 800)
@@ -1257,7 +1366,6 @@ def run_figura_fondo_test(patient_id: str, test_key: str, test_name: str, diffic
         h = random.randint(80, 150)
 
         target_rect = pygame.Rect(x, y, w, h)
-
         buttons = [
             {"label": "Rectángulo", "rect": pygame.Rect(180, 580, 200, 60)},
             {"label": "Círculo", "rect": pygame.Rect(470, 580, 200, 60)},
@@ -1266,6 +1374,20 @@ def run_figura_fondo_test(patient_id: str, test_key: str, test_name: str, diffic
         target_shape = random.choice(["rect", "circle", "triangle"])
 
     generate_round()
+
+    def get_feedback(correctas, total):
+        if correctas == total:
+            return "EXCELENTE", "¡Excelente rendimiento! Identificaste correctamente todas las figuras."
+        elif correctas == total - 1:
+            return "MUY BIEN", "Muy buen trabajo. Solo hubo una identificación incorrecta."
+        elif correctas == 3:
+            return "BIEN HECHO", "Buen desempeño. Lograste reconocer más de la mitad de las figuras."
+        elif correctas == 2:
+            return "SIGUE ASÍ", "Vas avanzando. Conviene seguir practicando la discriminación figura-fondo."
+        elif correctas == 1:
+            return "A PRACTICAR", "Se identificó una sola figura correctamente. Hace falta más práctica."
+        else:
+            return "A ENTRENAR", "No se identificaron figuras correctamente. Es recomendable reforzar este ejercicio."
 
     def draw_intro():
         draw_openrehab_intro_screen(
@@ -1283,118 +1405,167 @@ def run_figura_fondo_test(patient_id: str, test_key: str, test_name: str, diffic
     def draw_playing():
         bg = 205
 
-        if difficulty == 1:        # fácil
+        if difficulty == 1:
             outer_delta = -60
             inner_delta = -30
-        elif difficulty == 2:      # medio
+        elif difficulty == 2:
             outer_delta = -30
             inner_delta = -15
-        else:                      # difícil
+        else:
             outer_delta = -12
             inner_delta = -6
 
         screen.fill((bg, bg, bg))
-        # Figura externa
+
+        outer_color = tuple(max(0, min(255, bg + d)) for d in (outer_delta, outer_delta, outer_delta))
+        inner_color = tuple(max(0, min(255, bg + d)) for d in (inner_delta, inner_delta, inner_delta))
+
         if target_shape == "rect":
-            pygame.draw.rect(screen, (bg + outer_delta, bg + outer_delta, bg + outer_delta), target_rect, border_radius=14)
-
+            pygame.draw.rect(screen, outer_color, target_rect, border_radius=14)
         elif target_shape == "circle":
-            pygame.draw.ellipse(screen, (bg + outer_delta, bg + outer_delta, bg + outer_delta), target_rect)
-
+            pygame.draw.ellipse(screen, outer_color, target_rect)
         elif target_shape == "triangle":
             points = [
                 (target_rect.centerx, target_rect.top),
                 (target_rect.left, target_rect.bottom),
                 (target_rect.right, target_rect.bottom)
             ]
-            pygame.draw.polygon(screen, (bg + outer_delta, bg + outer_delta, bg + outer_delta), points)
-
-        # Figura interna (efecto contraste leve)
-        inner_rect = target_rect.inflate(-8, -8)
+            pygame.draw.polygon(screen, outer_color, points)
 
         inner_rect = target_rect.inflate(-8, -8)
-
         if target_shape == "rect":
-            pygame.draw.rect(screen, (bg + inner_delta, bg + inner_delta, bg + inner_delta), inner_rect, border_radius=14)
-
+            pygame.draw.rect(screen, inner_color, inner_rect, border_radius=14)
         elif target_shape == "circle":
-            pygame.draw.ellipse(screen, (bg + inner_delta, bg + inner_delta, bg + inner_delta), inner_rect)
-
+            pygame.draw.ellipse(screen, inner_color, inner_rect)
         elif target_shape == "triangle":
             points = [
                 (inner_rect.centerx, inner_rect.top),
                 (inner_rect.left, inner_rect.bottom),
                 (inner_rect.right, inner_rect.bottom)
             ]
-            pygame.draw.polygon(screen, (bg + inner_delta, bg + inner_delta, bg + inner_delta), points)
+            pygame.draw.polygon(screen, inner_color, points)
 
+        elapsed = 0 if start_ticks is None else (pygame.time.get_ticks() - start_ticks) / 1000
         header = font.render(f"Ronda {current_round + 1}/{rounds}", True, (30, 30, 30))
-        screen.blit(header, (40, 30))
+        stats = font.render(f"Aciertos: {correct_count} | Errores: {incorrect_count} | Tiempo: {elapsed:0.1f}s", True, (30, 30, 30))
+        screen.blit(header, (40, 26))
+        screen.blit(stats, (40, 62))
 
         for button in buttons:
             pygame.draw.rect(screen, (80, 160, 255), button["rect"], border_radius=12)
             txt = font.render(button["label"], True, (255, 255, 255))
-            screen.blit(txt, (button["rect"].x + 35, button["rect"].y + 16))
+            txt_rect = txt.get_rect(center=button["rect"].center)
+            screen.blit(txt, txt_rect)
 
     def draw_result():
-        draw_openrehab_result_screen(
-            screen,
-            width,
-            height,
-            test_name,
-            [f"Métrica principal: {final_metric} {final_unit}"],
-            action_text="ENTER para volver",
-            secondary_text="ESC para salir",
-            title="Resultado guardado",
-            badge_text="Resumen final",
-        )
+        screen.fill((10, 37, 64))
+
+        if not show_report:
+            txt_surf = font_giant.render(final_metrics["rango"], True, (114, 211, 154))
+            screen.blit(txt_surf, (width // 2 - txt_surf.get_width() // 2, 220))
+
+            msg_surf = font_hud.render(final_metrics["msg"], True, (199, 217, 234))
+            screen.blit(msg_surf, (width // 2 - msg_surf.get_width() // 2, 340))
+
+            for rect, label, color in [
+                (btn_reporte, "VER INFORME", (79, 195, 247)),
+                (btn_volver, "VOLVER", (36, 72, 110))
+            ]:
+                pygame.draw.rect(screen, color, rect, border_radius=12)
+                txt = font_button.render(label, True, (255, 255, 255))
+                screen.blit(txt, txt.get_rect(center=rect.center))
+        else:
+            popup_rect = pygame.Rect(width // 2 - 300, 150, 600, 480)
+            pygame.draw.rect(screen, (244, 248, 252), popup_rect, border_radius=20)
+            pygame.draw.rect(screen, (43, 92, 136), popup_rect, 3, border_radius=20)
+
+            title_surf = font_button.render("INFORME CLÍNICO DETALLADO", True, (10, 37, 64))
+            screen.blit(title_surf, (width // 2 - title_surf.get_width() // 2, 180))
+
+            info_lines = [
+                f"Figuras correctas: {final_metrics['correctas']}/{final_metrics['total']}",
+                f"Figuras incorrectas: {final_metrics['incorrectas']}",
+                f"Tiempo total: {final_metrics['tiempo']}s",
+                f"Tiempo promedio por figura: {final_metrics['tiempo_promedio']}s",
+                f"Porcentaje de acierto: {final_metrics['porcentaje']}%"
+            ]
+            for i, line in enumerate(info_lines):
+                line_surf = font_report.render(line, True, (36, 72, 110))
+                screen.blit(line_surf, (width // 2 - 230, 250 + (i * 50)))
+
+            pygame.draw.rect(screen, (180, 50, 50), btn_cerrar, border_radius=10)
+            close_surf = font_button.render("CERRAR", True, (255, 255, 255))
+            screen.blit(close_surf, close_surf.get_rect(center=btn_cerrar.center))
 
     running = True
-
     while running:
-        for event in pygame.event.get():
+        mx, my = pygame.mouse.get_pos()
 
+        for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
 
             elif event.type == pygame.KEYDOWN:
-
                 if event.key == pygame.K_ESCAPE:
                     running = False
-
                 elif state == "intro" and event.key == pygame.K_SPACE:
                     state = "playing"
-
-                elif state == "result" and event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                    show_report = False
+                    current_round = 0
+                    correct_count = 0
+                    incorrect_count = 0
+                    total_time = 0.0
+                    avg_time = 0.0
+                    start_ticks = pygame.time.get_ticks()
+                    generate_round()
+                elif state == "result" and event.key == pygame.K_RETURN and not show_report:
                     running = False
 
-            elif event.type == pygame.MOUSEBUTTONDOWN and state == "playing":
-
-                mouse_x, mouse_y = event.pos
-
-                for button in buttons:
-                    if button["rect"].collidepoint(mouse_x, mouse_y):
-
-                        if (
-                            (button["label"] == "Rectángulo" and target_shape == "rect") or
-                            (button["label"] == "Círculo" and target_shape == "circle") or
-                            (button["label"] == "Triángulo" and target_shape == "triangle")
-                        ):
-                            final_metric += 1
-
-                        current_round += 1
-
-                        if current_round >= rounds:
-                            save_result_json(
-                                patient_id,
-                                test_key,
-                                final_metric,
-                                final_unit,
-                                attempts
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                if state == "playing":
+                    for button in buttons:
+                        if button["rect"].collidepoint(mx, my):
+                            is_correct = (
+                                (button["label"] == "Rectángulo" and target_shape == "rect") or
+                                (button["label"] == "Círculo" and target_shape == "circle") or
+                                (button["label"] == "Triángulo" and target_shape == "triangle")
                             )
-                            state = "result"
-                        else:
-                            generate_round()
+
+                            if is_correct:
+                                correct_count += 1
+                            else:
+                                incorrect_count += 1
+
+                            current_round += 1
+
+                            if current_round >= rounds:
+                                total_time = (pygame.time.get_ticks() - start_ticks) / 1000 if start_ticks else 0.0
+                                avg_time = total_time / rounds if rounds else 0.0
+                                porcentaje = round((correct_count / rounds) * 100) if rounds else 0
+                                rango, msg = get_feedback(correct_count, rounds)
+                                final_metrics = {
+                                    "correctas": correct_count,
+                                    "incorrectas": incorrect_count,
+                                    "total": rounds,
+                                    "tiempo": round(total_time, 2),
+                                    "tiempo_promedio": round(avg_time, 2),
+                                    "porcentaje": porcentaje,
+                                    "rango": rango,
+                                    "msg": msg
+                                }
+                                save_result_json(patient_id, test_key, final_metrics, attempts)
+                                state = "result"
+                            else:
+                                generate_round()
+                            break
+
+                elif state == "result":
+                    if btn_reporte.collidepoint(mx, my) and not show_report:
+                        show_report = True
+                    elif btn_volver.collidepoint(mx, my) and not show_report:
+                        running = False
+                    elif btn_cerrar.collidepoint(mx, my) and show_report:
+                        show_report = False
 
         if state == "intro":
             draw_intro()
@@ -1408,8 +1579,9 @@ def run_figura_fondo_test(patient_id: str, test_key: str, test_name: str, diffic
 
     pygame.quit()
 
+
+
 def run_acinetopsia_test(patient_id: str, test_key: str, test_name: str, difficulty: int):
-    
     pygame.init()
 
     width, height = 1200, 750
@@ -1418,27 +1590,85 @@ def run_acinetopsia_test(patient_id: str, test_key: str, test_name: str, difficu
 
     clock = pygame.time.Clock()
 
-    title_font = pygame.font.SysFont("arial", 34, bold=True)
     font = pygame.font.SysFont("arial", 24)
+    font_hud = pygame.font.SysFont("arial", 26, bold=True)
+    font_giant = pygame.font.SysFont("arial", 80, bold=True)
+    font_button = pygame.font.SysFont("arial", 24, bold=True)
+    font_report = pygame.font.SysFont("arial", 22)
 
     state = "intro"
+    show_report = False
     attempts = 1
-    final_metric = 0
-    final_unit = "objetos_capturados"
 
+    total_targets = 8
+    found_count = 0
+    total_clicks = 0
+    misclicks = 0
     duration_seconds = 25
     start_ticks = None
+    total_time = 0.0
+    avg_time = 0.0
+    final_metrics = {}
 
     targets = []
 
-    for _ in range(8):
-        targets.append({
-            "x": random.randint(50, 300),
-            "y": random.randint(140, height - 70),
-            "r": random.randint(20, 30),
-            "speed": random.randint(3, 7),
-            "active": True
-        })
+    def create_targets():
+        nonlocal targets
+        targets = []
+        for _ in range(total_targets):
+            targets.append({
+                "x": random.randint(50, 300),
+                "y": random.randint(140, height - 70),
+                "r": random.randint(20, 30),
+                "speed": random.randint(3, 7),
+                "active": True
+            })
+
+    create_targets()
+
+    btn_reporte = pygame.Rect(width // 2 - 220, height - 130, 210, 55)
+    btn_volver = pygame.Rect(width // 2 + 10, height - 130, 210, 55)
+    btn_cerrar = pygame.Rect(width // 2 - 100, 560, 200, 45)
+
+    def get_feedback(encontrados, total):
+        if encontrados == total:
+            return "EXCELENTE", "¡Excelente rendimiento! Marcaste correctamente todos los objetivos."
+        elif encontrados == total - 1:
+            return "MUY BIEN", "Muy buen trabajo. Solo faltó un objetivo."
+        elif encontrados == total - 2:
+            return "BIEN HECHO", "Buen desempeño. Lograste detectar la mayoría de los estímulos."
+        elif encontrados == total - 3:
+            return "SIGUE ASÍ", "Vas avanzando bien. Con más práctica podés mejorar aún más."
+        elif encontrados == total - 4:
+            return "A PRACTICAR", "Se encontraron varios objetivos, pero conviene seguir entrenando la percepción del movimiento."
+        elif encontrados >= 1:
+            return "A ENTRENAR", "Se detectaron pocos objetivos. Es recomendable reforzar este ejercicio."
+        else:
+            return "A ENTRENAR", "No se detectaron objetivos. Conviene repetir el ejercicio con acompañamiento."
+
+    def finalize_result():
+        nonlocal total_time, avg_time, final_metrics, state
+        elapsed = (pygame.time.get_ticks() - start_ticks) / 1000 if start_ticks else 0.0
+        total_time = min(elapsed, duration_seconds)
+        avg_time = total_time / total_targets if total_targets else 0.0
+        not_found = total_targets - found_count
+        rango, msg = get_feedback(found_count, total_targets)
+        porcentaje = round((found_count / total_targets) * 100) if total_targets else 0
+
+        final_metrics = {
+            "encontrados": found_count,
+            "total": total_targets,
+            "no_encontrados": not_found,
+            "tiempo": round(total_time, 2),
+            "tiempo_promedio": round(avg_time, 2),
+            "clicks_totales": total_clicks,
+            "misclicks": misclicks,
+            "porcentaje": porcentaje,
+            "rango": rango,
+            "msg": msg
+        }
+        save_result_json(patient_id, test_key, final_metrics, attempts)
+        state = "result"
 
     def draw_intro():
         draw_openrehab_intro_screen(
@@ -1447,7 +1677,7 @@ def run_acinetopsia_test(patient_id: str, test_key: str, test_name: str, difficu
             height,
             test_name,
             patient_id,
-            ["Capturá con click los objetos que cruzan la pantalla."],
+            ["Capturá con click los objetos que cruzan la pantalla antes de que termine el tiempo."],
             start_text="ESPACIO para comenzar",
             back_text="ESC para volver al menú",
             badge_text="Movimiento",
@@ -1456,51 +1686,81 @@ def run_acinetopsia_test(patient_id: str, test_key: str, test_name: str, difficu
     def draw_playing():
         bg = 240
 
-        if difficulty == 1:        # fácil
+        if difficulty == 1:
             delta = -140
-        elif difficulty == 2:      # medio
+        elif difficulty == 2:
             delta = -80
-        else:                      # difícil
+        else:
             delta = -40
 
         screen.fill((bg, bg, bg))
 
-        elapsed = (pygame.time.get_ticks() - start_ticks) / 1000
+        elapsed = (pygame.time.get_ticks() - start_ticks) / 1000 if start_ticks else 0.0
         remaining = max(0, duration_seconds - elapsed)
 
         pygame.draw.rect(screen, (30, 30, 30), pygame.Rect(0, 0, width, 90))
-        h1 = font.render(f"Capturados: {final_metric}", True, (255, 255, 255))
+        h1 = font.render(f"Capturados: {found_count}/{total_targets}", True, (255, 255, 255))
         h2 = font.render(f"Tiempo restante: {remaining:0.1f}s", True, (255, 230, 120))
+        h3 = font.render(f"Clicks: {total_clicks} | Misclicks: {misclicks}", True, (255, 255, 255))
         screen.blit(h1, (20, 18))
         screen.blit(h2, (20, 52))
+        screen.blit(h3, (820, 32))
 
         for target in targets:
             if target["active"]:
-                # color del círculo (relleno)
                 circle_color = tuple(max(0, min(255, bg + delta)) for _ in range(3))
-
-                # el borde tiene MENOS contraste que el relleno
                 border_delta = int(delta * 0.5)
                 border_color = tuple(max(0, min(255, bg + border_delta)) for _ in range(3))
 
                 pygame.draw.circle(screen, circle_color, (int(target["x"]), int(target["y"])), target["r"])
                 pygame.draw.circle(screen, border_color, (int(target["x"]), int(target["y"])), target["r"], 2)
+
     def draw_result():
-        draw_openrehab_result_screen(
-            screen,
-            width,
-            height,
-            test_name,
-            [f"Métrica principal: {final_metric} {final_unit}"],
-            action_text="ENTER para volver",
-            secondary_text="ESC para salir",
-            title="Resultado guardado",
-            badge_text="Resumen final",
-        )
+        screen.fill((10, 37, 64))
+
+        if not show_report:
+            txt_surf = font_giant.render(final_metrics["rango"], True, (114, 211, 154))
+            screen.blit(txt_surf, (width // 2 - txt_surf.get_width() // 2, 220))
+
+            msg_surf = font_hud.render(final_metrics["msg"], True, (199, 217, 234))
+            screen.blit(msg_surf, (width // 2 - msg_surf.get_width() // 2, 340))
+
+            for rect, label, color in [
+                (btn_reporte, "VER INFORME", (79, 195, 247)),
+                (btn_volver, "VOLVER", (36, 72, 110))
+            ]:
+                pygame.draw.rect(screen, color, rect, border_radius=12)
+                txt = font_button.render(label, True, (255, 255, 255))
+                screen.blit(txt, txt.get_rect(center=rect.center))
+        else:
+            popup_rect = pygame.Rect(width // 2 - 300, 135, 600, 510)
+            pygame.draw.rect(screen, (244, 248, 252), popup_rect, border_radius=20)
+            pygame.draw.rect(screen, (43, 92, 136), popup_rect, 3, border_radius=20)
+
+            title_surf = font_button.render("INFORME CLÍNICO DETALLADO", True, (10, 37, 64))
+            screen.blit(title_surf, (width // 2 - title_surf.get_width() // 2, 165))
+
+            info_lines = [
+                f"Objetivos encontrados: {final_metrics['encontrados']}/{final_metrics['total']}",
+                f"Objetivos no encontrados: {final_metrics['no_encontrados']}",
+                f"Tiempo total: {final_metrics['tiempo']}s",
+                f"Tiempo promedio por objetivo: {final_metrics['tiempo_promedio']}s",
+                f"Clicks totales: {final_metrics['clicks_totales']}",
+                f"Misclicks: {final_metrics['misclicks']}"
+            ]
+            for i, line in enumerate(info_lines):
+                line_surf = font_report.render(line, True, (36, 72, 110))
+                screen.blit(line_surf, (width // 2 - 235, 235 + (i * 45)))
+
+            pygame.draw.rect(screen, (180, 50, 50), btn_cerrar, border_radius=10)
+            close_surf = font_button.render("CERRAR", True, (255, 255, 255))
+            screen.blit(close_surf, close_surf.get_rect(center=btn_cerrar.center))
 
     running = True
 
     while running:
+        mx, my = pygame.mouse.get_pos()
+
         for event in pygame.event.get():
 
             if event.type == pygame.QUIT:
@@ -1513,39 +1773,52 @@ def run_acinetopsia_test(patient_id: str, test_key: str, test_name: str, difficu
 
                 elif state == "intro" and event.key == pygame.K_SPACE:
                     state = "playing"
+                    show_report = False
+                    found_count = 0
+                    total_clicks = 0
+                    misclicks = 0
+                    total_time = 0.0
+                    avg_time = 0.0
+                    final_metrics = {}
+                    create_targets()
                     start_ticks = pygame.time.get_ticks()
 
-                elif state == "result" and event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                elif state == "result" and event.key == pygame.K_RETURN and not show_report:
                     running = False
 
-            elif event.type == pygame.MOUSEBUTTONDOWN and state == "playing":
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
 
-                mouse_x, mouse_y = event.pos
+                if state == "playing":
+                    total_clicks += 1
+                    clicked_target = False
 
-                for target in targets:
-                    if not target["active"]:
-                        continue
+                    for target in targets:
+                        if not target["active"]:
+                            continue
 
-                    dx = mouse_x - target["x"]
-                    dy = mouse_y - target["y"]
-                    inside = (dx * dx + dy * dy) <= (target["r"] * target["r"])
+                        dx = mx - target["x"]
+                        dy = my - target["y"]
+                        inside = (dx * dx + dy * dy) <= (target["r"] * target["r"])
 
-                    if inside:
-                        target["active"] = False
-                        final_metric += 1
+                        if inside:
+                            target["active"] = False
+                            found_count += 1
+                            clicked_target = True
 
-                    # TERMINAR SI YA CAPTURÓ TODOS
-                        if final_metric >= len(targets):
-                            save_result_json(
-                                patient_id,
-                                test_key,
-                                final_metric,
-                                final_unit,
-                                attempts
-                            )
-                            state = "result"
+                            if found_count >= total_targets:
+                                finalize_result()
+                            break
 
-                        break
+                    if not clicked_target:
+                        misclicks += 1
+
+                elif state == "result":
+                    if btn_reporte.collidepoint(mx, my) and not show_report:
+                        show_report = True
+                    elif btn_volver.collidepoint(mx, my) and not show_report:
+                        running = False
+                    elif btn_cerrar.collidepoint(mx, my) and show_report:
+                        show_report = False
 
         if state == "playing":
 
@@ -1556,16 +1829,9 @@ def run_acinetopsia_test(patient_id: str, test_key: str, test_name: str, difficu
                         target["x"] = -30
                         target["y"] = random.randint(140, height - 70)
 
-            elapsed = (pygame.time.get_ticks() - start_ticks) / 1000
-            if elapsed >= duration_seconds:
-                save_result_json(
-                    patient_id,
-                    test_key,
-                    final_metric,
-                    final_unit,
-                    attempts
-                )
-                state = "result"
+            elapsed = (pygame.time.get_ticks() - start_ticks) / 1000 if start_ticks else 0.0
+            if elapsed >= duration_seconds and state == "playing":
+                finalize_result()
 
         if state == "intro":
             draw_intro()
@@ -1696,7 +1962,7 @@ def run_estabilizador_trayectoria_test(patient_id: str, test_key: str, test_name
 
             if player_x >= finish_x:
                 final_metric = deviations
-                save_result_json(patient_id, test_key, final_metric, final_unit, attempts)
+                save_result_json(patient_id, test_key, {final_unit: final_metric}, attempts)
                 state = "result"
 
         if state == "intro":
@@ -1807,7 +2073,7 @@ def run_ley_de_fitts_test(patient_id: str, test_key: str, test_name: str):
 
                 if current_trial >= trials:
                     final_metric = hits
-                    save_result_json(patient_id, test_key, final_metric, final_unit, attempts)
+                    save_result_json(patient_id, test_key, {final_unit: final_metric}, attempts)
                     state = "result"
                 else:
                     new_target()
@@ -1921,7 +2187,7 @@ def run_barrido_ritmico_test(patient_id: str, test_key: str, test_name: str):
 
                     if current_round >= total_rounds:
                         final_metric = correct
-                        save_result_json(patient_id, test_key, final_metric, final_unit, attempts)
+                        save_result_json(patient_id, test_key, {final_unit: final_metric}, attempts)
                         state = "result"
                     else:
                         target_option = random.choice(options)
@@ -2043,7 +2309,7 @@ def run_arrastre_sostenido_test(patient_id: str, test_key: str, test_name: str):
 
                     if round_count >= total_rounds:
                         final_metric = completed
-                        save_result_json(patient_id, test_key, final_metric, final_unit, attempts)
+                        save_result_json(patient_id, test_key, {final_unit: final_metric}, attempts)
                         state = "result"
                     else:
                         reset_object()
@@ -2178,7 +2444,7 @@ def run_ganancia_adaptativa_test(patient_id: str, test_key: str, test_name: str)
 
                 if target_index >= total_targets:
                     final_metric = hits
-                    save_result_json(patient_id, test_key, final_metric, final_unit, attempts)
+                    save_result_json(patient_id, test_key, {final_unit: final_metric}, attempts)
                     state = "result"
 
         if state == "intro":
@@ -2304,7 +2570,7 @@ def run_reaccion_multimodal_test(patient_id: str, test_key: str, test_name: str)
                     current_trial += 1
                     if current_trial >= total_trials:
                         final_metric = correct
-                        save_result_json(patient_id, test_key, final_metric, final_unit, attempts)
+                        save_result_json(patient_id, test_key, {final_unit: final_metric}, attempts)
                         state = "result"
                     else:
                         next_trial()
@@ -2320,7 +2586,7 @@ def run_reaccion_multimodal_test(patient_id: str, test_key: str, test_name: str)
                     current_trial += 1
                     if current_trial >= total_trials:
                         final_metric = correct
-                        save_result_json(patient_id, test_key, final_metric, final_unit, attempts)
+                        save_result_json(patient_id, test_key, {final_unit: final_metric}, attempts)
                         state = "result"
                     else:
                         next_trial()
@@ -2448,7 +2714,7 @@ def run_denominacion_fonologica_test(patient_id: str, test_key: str, test_name: 
 
                         if current_item >= len(items):
                             final_metric = correct_count
-                            save_result_json(patient_id, test_key, final_metric, final_unit, attempts)
+                            save_result_json(patient_id, test_key, {final_unit: final_metric}, attempts)
                             state = "result"
                         else:
                             build_option_buttons()
@@ -2576,7 +2842,7 @@ def run_memoria_n_back_test(patient_id: str, test_key: str, test_name: str):
                     current_index += 1
                     if current_index >= len(sequence):
                         final_metric = correct_count
-                        save_result_json(patient_id, test_key, final_metric, final_unit, attempts)
+                        save_result_json(patient_id, test_key, {final_unit: final_metric}, attempts)
                         state = "result"
                     else:
                         showing_item = True
@@ -2713,7 +2979,7 @@ def run_efecto_stroop_test(patient_id: str, test_key: str, test_name: str):
 
                         if current_trial >= len(trials):
                             final_metric = correct_count
-                            save_result_json(patient_id, test_key, final_metric, final_unit, attempts)
+                            save_result_json(patient_id, test_key, {final_unit: final_metric}, attempts)
                             state = "result"
                         break
 
@@ -2840,7 +3106,7 @@ def run_completamiento_semantico_test(patient_id: str, test_key: str, test_name:
 
                         if current_item >= len(items):
                             final_metric = correct_count
-                            save_result_json(patient_id, test_key, final_metric, final_unit, attempts)
+                            save_result_json(patient_id, test_key, {final_unit: final_metric}, attempts)
                             state = "result"
                         else:
                             build_buttons()
@@ -2965,7 +3231,7 @@ def run_intruso_logico_test(patient_id: str, test_key: str, test_name: str):
                         current_group += 1
                         if current_group >= len(groups):
                             final_metric = correct_count
-                            save_result_json(patient_id, test_key, final_metric, final_unit, attempts)
+                            save_result_json(patient_id, test_key, {final_unit: final_metric}, attempts)
                             state = "result"
                         else:
                             build_buttons()
@@ -3117,7 +3383,7 @@ def run_secuenciacion_avd_test(patient_id: str, test_key: str, test_name: str):
 
                             if current_sequence >= len(sequences):
                                 final_metric = correct_count
-                                save_result_json(patient_id, test_key, final_metric, final_unit, attempts)
+                                save_result_json(patient_id, test_key, {final_unit: final_metric}, attempts)
                                 state = "result"
                             else:
                                 build_buttons()
@@ -3170,6 +3436,191 @@ class OpenRehabApp:
     def clear_main(self):
         for widget in self.main_container.winfo_children():
             widget.destroy()
+
+
+    def get_tests_dict_for_current_area(self):
+        if self.current_area_key.get() == "area1":
+            return AREA_1_TESTS
+        if self.current_area_key.get() == "area2":
+            return AREA_2_TESTS
+        return AREA_3_TESTS
+
+    def open_saved_report(self, result: dict):
+        colors = {
+            "bg_main": "#0A2540",
+            "bg_card": "#F4F8FC",
+            "border": "#2B5C88",
+            "title": "#0A2540",
+            "text": "#24435F",
+            "accent": "#4FC3F7",
+            "danger": "#B43232",
+        }
+
+        test_dict = {}
+        test_dict.update(AREA_1_TESTS)
+        test_dict.update(AREA_2_TESTS)
+        test_dict.update(AREA_3_TESTS)
+
+        top = tk.Toplevel(self.root)
+        top.title("Informe guardado")
+        top.geometry("760x620")
+        top.configure(bg=colors["bg_main"])
+        top.transient(self.root)
+        top.grab_set()
+
+        card = tk.Frame(top, bg=colors["bg_card"], highlightthickness=2, highlightbackground=colors["border"])
+        card.pack(fill="both", expand=True, padx=28, pady=28)
+
+        tk.Frame(card, bg=colors["accent"], height=8).pack(fill="x", side="top")
+
+        pretty_test = test_dict.get(result.get("test", ""), result.get("test", "Test"))
+        tk.Label(
+            card,
+            text="INFORME CLÍNICO DETALLADO",
+            font=("Arial", 18, "bold"),
+            fg=colors["title"],
+            bg=colors["bg_card"]
+        ).pack(pady=(20, 6))
+
+        tk.Label(
+            card,
+            text=pretty_test,
+            font=("Arial", 13, "bold"),
+            fg=colors["text"],
+            bg=colors["bg_card"]
+        ).pack()
+
+        container = tk.Frame(card, bg=colors["bg_card"])
+        container.pack(fill="both", expand=True, padx=26, pady=(18, 16))
+
+        scrollbar = tk.Scrollbar(container)
+        scrollbar.pack(side="right", fill="y")
+
+        text = tk.Text(
+            container,
+            yscrollcommand=scrollbar.set,
+            bg=colors["bg_card"],
+            fg=colors["text"],
+            font=("Arial", 12),
+            wrap="word",
+            relief="flat",
+            bd=0,
+            padx=6,
+            pady=6,
+            spacing1=3,
+            spacing3=8
+        )
+        text.pack(side="left", fill="both", expand=True)
+        scrollbar.config(command=text.yview)
+
+        for line in build_report_lines(result):
+            text.insert("end", line + "\n")
+
+        text.config(state="disabled")
+
+        tk.Button(
+            card,
+            text="CERRAR",
+            font=("Arial", 12, "bold"),
+            bg=colors["danger"],
+            fg="white",
+            activebackground="#982929",
+            activeforeground="white",
+            relief="flat",
+            bd=0,
+            cursor="hand2",
+            command=top.destroy
+        ).pack(pady=(0, 20), ipadx=18, ipady=8)
+
+    def populate_history_panel(self, parent, patient_id: str, tests_dict: dict):
+        for child in parent.winfo_children():
+            child.destroy()
+
+        history_results = load_patient_results(patient_id)
+
+        if not history_results:
+            tk.Label(
+                parent,
+                text="No se encontraron resultados previos para este paciente en la carpeta /results.",
+                font=("Arial", 11),
+                fg="#C7D9EA",
+                bg="#102F4E",
+                justify="left",
+                wraplength=420
+            ).pack(anchor="w", padx=14, pady=14)
+            return
+
+        canvas = tk.Canvas(parent, bg="#102F4E", highlightthickness=0, bd=0)
+        scrollbar = tk.Scrollbar(parent, orient="vertical", command=canvas.yview)
+        inner = tk.Frame(canvas, bg="#102F4E")
+
+        inner.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+
+        canvas.create_window((0, 0), window=inner, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        for item in history_results:
+            pretty_test = tests_dict.get(item.get("test", ""), item.get("test", "Test desconocido"))
+            summary = get_metric_summary(item)
+
+            card = tk.Frame(
+                inner,
+                bg="#163A63",
+                highlightthickness=1,
+                highlightbackground="#2B5C88"
+            )
+            card.pack(fill="x", padx=10, pady=8)
+
+            tk.Label(
+                card,
+                text=pretty_test,
+                font=("Arial", 11, "bold"),
+                fg="#F4F8FC",
+                bg="#163A63",
+                anchor="w",
+                justify="left",
+                wraplength=320
+            ).pack(anchor="w", padx=12, pady=(10, 2))
+
+            tk.Label(
+                card,
+                text=f"{item.get('fecha', '-')}",
+                font=("Arial", 10),
+                fg="#C7D9EA",
+                bg="#163A63",
+                anchor="w"
+            ).pack(anchor="w", padx=12)
+
+            tk.Label(
+                card,
+                text=summary,
+                font=("Arial", 10),
+                fg="#8FB1CC",
+                bg="#163A63",
+                anchor="w",
+                justify="left",
+                wraplength=320
+            ).pack(anchor="w", padx=12, pady=(4, 10))
+
+            tk.Button(
+                card,
+                text="Ver informe",
+                font=("Arial", 10, "bold"),
+                bg="#4FC3F7",
+                fg="white",
+                activebackground="#35B5EC",
+                activeforeground="white",
+                relief="flat",
+                bd=0,
+                cursor="hand2",
+                command=lambda result=item: self.open_saved_report(result)
+            ).pack(anchor="e", padx=12, pady=(0, 12), ipadx=10, ipady=4)
 
     # --------------------------------------------------------
     # PANTALLA 1: LOGIN / CARGAR PARTIDA
@@ -3585,9 +4036,9 @@ class OpenRehabApp:
             buttons_row,
             text="Área 2\nControl Motor y Acceso",
             font=("Arial", 13, "bold"),
-            bg=btn_secondary,
+            bg="#FFD6A5",
             fg="white",
-            activebackground=btn_secondary_active,
+            activebackground="#FFCC8F",
             activeforeground="white",
             relief="flat",
             bd=0,
@@ -3602,9 +4053,9 @@ class OpenRehabApp:
             buttons_row,
             text="Área 3\nCognición y Lenguaje",
             font=("Arial", 13, "bold"),
-            bg="#30506F",
+            bg="#F6E7A1",
             fg="white",
-            activebackground="#27445F",
+            activebackground="#EEDB84",
             activeforeground="white",
             relief="flat",
             bd=0,
@@ -3810,8 +4261,7 @@ class OpenRehabApp:
             last_result = get_last_result_for_test(patient_id, test_key)
 
             if last_result:
-                metric = last_result.get("metrica_principal", "-")
-                unit = last_result.get("unidad", "-")
+                summary = get_metric_summary(last_result)
                 date = last_result.get("fecha", "-")
                 attempts = last_result.get("intentos", "-")
 
@@ -3819,9 +4269,9 @@ class OpenRehabApp:
                     text=(
                         f"Último resultado encontrado:\n\n"
                         f"• Fecha: {date}\n"
-                        f"• Métrica principal: {metric} {unit}\n"
+                        f"• Resumen: {summary}\n"
                         f"• Intentos: {attempts}\n\n"
-                        f"Al finalizar un nuevo intento se guardará otro JSON en /results."
+                        f"Podés revisar el detalle completo desde el historial del paciente."
                     )
                 )
             else:
@@ -3889,7 +4339,6 @@ class OpenRehabApp:
             bg=bg_card
         ).pack(anchor="w", padx=20, pady=(0, 14))
 
-        history_results = load_patient_results(patient_id)
 
         history_container = tk.Frame(
             right_panel,
@@ -3899,44 +4348,8 @@ class OpenRehabApp:
         )
         history_container.pack(fill="both", expand=True, padx=20, pady=(0, 20))
 
-        history_scroll = tk.Scrollbar(history_container)
-        history_scroll.pack(side="right", fill="y")
+        self.populate_history_panel(history_container, patient_id, self.get_tests_dict_for_current_area())
 
-        history_list = tk.Text(
-            history_container,
-            yscrollcommand=history_scroll.set,
-            bg="#102F4E",
-            fg=text_primary,
-            font=("Consolas", 10),
-            wrap="word",
-            relief="flat",
-            padx=14,
-            pady=14,
-            insertbackground=text_primary
-        )
-        history_list.pack(side="left", fill="both", expand=True)
-
-        history_scroll.config(command=history_list.yview)
-
-        if history_results:
-            for item in history_results:
-                test_name = AREA_1_TESTS.get(item.get("test", ""), item.get("test", "Test desconocido"))
-                line = (
-                    f"Fecha: {item.get('fecha', '-')}\n"
-                    f"Test: {test_name}\n"
-                    f"Métrica: {item.get('metrica_principal', '-')} {item.get('unidad', '-')}\n"
-                    f"Intentos: {item.get('intentos', '-')}\n"
-                    f"Archivo: {item.get('__file', '-')}\n"
-                    f"{'-' * 58}\n"
-                )
-                history_list.insert("end", line)
-        else:
-            history_list.insert(
-                "end",
-                "No se encontraron resultados previos para este paciente en la carpeta /results.\n"
-            )
-
-        history_list.config(state="disabled")
 
         bottom_wrap = tk.Frame(outer, bg=bg_main)
         bottom_wrap.pack(fill="x", side="bottom")
@@ -4093,8 +4506,7 @@ class OpenRehabApp:
             last_result = get_last_result_for_test(patient_id, test_key)
 
             if last_result:
-                metric = last_result.get("metrica_principal", "-")
-                unit = last_result.get("unidad", "-")
+                summary = get_metric_summary(last_result)
                 date = last_result.get("fecha", "-")
                 attempts = last_result.get("intentos", "-")
 
@@ -4102,9 +4514,9 @@ class OpenRehabApp:
                     text=(
                         f"Último resultado encontrado:\n\n"
                         f"• Fecha: {date}\n"
-                        f"• Métrica principal: {metric} {unit}\n"
+                        f"• Resumen: {summary}\n"
                         f"• Intentos: {attempts}\n\n"
-                        f"Al finalizar un nuevo intento se guardará otro JSON en /results."
+                        f"Podés revisar el detalle completo desde el historial del paciente."
                     )
                 )
             else:
@@ -4169,7 +4581,6 @@ class OpenRehabApp:
             bg=bg_card
         ).pack(anchor="w", padx=20, pady=(0, 14))
 
-        history_results = load_patient_results(patient_id)
 
         history_container = tk.Frame(
             right_panel,
@@ -4179,44 +4590,8 @@ class OpenRehabApp:
         )
         history_container.pack(fill="both", expand=True, padx=20, pady=(0, 20))
 
-        history_scroll = tk.Scrollbar(history_container)
-        history_scroll.pack(side="right", fill="y")
+        self.populate_history_panel(history_container, patient_id, self.get_tests_dict_for_current_area())
 
-        history_list = tk.Text(
-            history_container,
-            yscrollcommand=history_scroll.set,
-            bg="#102F4E",
-            fg=text_primary,
-            font=("Consolas", 10),
-            wrap="word",
-            relief="flat",
-            padx=14,
-            pady=14,
-            insertbackground=text_primary
-        )
-        history_list.pack(side="left", fill="both", expand=True)
-
-        history_scroll.config(command=history_list.yview)
-
-        if history_results:
-            for item in history_results:
-                test_name = AREA_2_TESTS.get(item.get("test", ""), item.get("test", "Test desconocido"))
-                line = (
-                    f"Fecha: {item.get('fecha', '-')}\n"
-                    f"Test: {test_name}\n"
-                    f"Métrica: {item.get('metrica_principal', '-')} {item.get('unidad', '-')}\n"
-                    f"Intentos: {item.get('intentos', '-')}\n"
-                    f"Archivo: {item.get('__file', '-')}\n"
-                    f"{'-' * 58}\n"
-                )
-                history_list.insert("end", line)
-        else:
-            history_list.insert(
-                "end",
-                "No se encontraron resultados previos para este paciente en la carpeta /results.\n"
-            )
-
-        history_list.config(state="disabled")
 
         bottom_wrap = tk.Frame(outer, bg=bg_main)
         bottom_wrap.pack(fill="x", side="bottom")
@@ -4374,8 +4749,7 @@ class OpenRehabApp:
             last_result = get_last_result_for_test(patient_id, test_key)
 
             if last_result:
-                metric = last_result.get("metrica_principal", "-")
-                unit = last_result.get("unidad", "-")
+                summary = get_metric_summary(last_result)
                 date = last_result.get("fecha", "-")
                 attempts = last_result.get("intentos", "-")
 
@@ -4383,9 +4757,9 @@ class OpenRehabApp:
                     text=(
                         f"Último resultado encontrado:\n\n"
                         f"• Fecha: {date}\n"
-                        f"• Métrica principal: {metric} {unit}\n"
+                        f"• Resumen: {summary}\n"
                         f"• Intentos: {attempts}\n\n"
-                        f"Al finalizar un nuevo intento se guardará otro JSON en /results."
+                        f"Podés revisar el detalle completo desde el historial del paciente."
                     )
                 )
             else:
@@ -4450,7 +4824,6 @@ class OpenRehabApp:
             bg=bg_card
         ).pack(anchor="w", padx=20, pady=(0, 14))
 
-        history_results = load_patient_results(patient_id)
 
         history_container = tk.Frame(
             right_panel,
@@ -4460,44 +4833,8 @@ class OpenRehabApp:
         )
         history_container.pack(fill="both", expand=True, padx=20, pady=(0, 20))
 
-        history_scroll = tk.Scrollbar(history_container)
-        history_scroll.pack(side="right", fill="y")
+        self.populate_history_panel(history_container, patient_id, self.get_tests_dict_for_current_area())
 
-        history_list = tk.Text(
-            history_container,
-            yscrollcommand=history_scroll.set,
-            bg="#102F4E",
-            fg=text_primary,
-            font=("Consolas", 10),
-            wrap="word",
-            relief="flat",
-            padx=14,
-            pady=14,
-            insertbackground=text_primary
-        )
-        history_list.pack(side="left", fill="both", expand=True)
-
-        history_scroll.config(command=history_list.yview)
-
-        if history_results:
-            for item in history_results:
-                test_name = AREA_3_TESTS.get(item.get("test", ""), item.get("test", "Test desconocido"))
-                line = (
-                    f"Fecha: {item.get('fecha', '-')}\n"
-                    f"Test: {test_name}\n"
-                    f"Métrica: {item.get('metrica_principal', '-')} {item.get('unidad', '-')}\n"
-                    f"Intentos: {item.get('intentos', '-')}\n"
-                    f"Archivo: {item.get('__file', '-')}\n"
-                    f"{'-' * 58}\n"
-                )
-                history_list.insert("end", line)
-        else:
-            history_list.insert(
-                "end",
-                "No se encontraron resultados previos para este paciente en la carpeta /results.\n"
-            )
-
-        history_list.config(state="disabled")
 
         bottom_wrap = tk.Frame(outer, bg=bg_main)
         bottom_wrap.pack(fill="x", side="bottom")

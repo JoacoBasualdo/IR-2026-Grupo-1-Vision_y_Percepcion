@@ -1,0 +1,19 @@
+{
+    "id_paciente": "Facu",
+    "fecha": "2026-03-31 16:11:06",
+    "test": "acinetopsia",
+    "metricas": {
+        "encontrados": 8,
+        "total": 8,
+        "no_encontrados": 0,
+        "tiempo": 8.66,
+        "tiempo_maximo": 25,
+        "tiempo_promedio": 1.08,
+        "clicks_totales": 12,
+        "misclicks": 4,
+        "porcentaje": 100,
+        "rango": "EXCELENTE",
+        "msg": "¡Excelente rendimiento! Marcaste correctamente todos los objetivos."
+    },
+    "intentos": 1
+}
