@@ -1219,7 +1219,7 @@ def run_cancelacion_estimulos_test(patient_id: str, test_key: str, test_name: st
 
     pygame.quit()
 
-def run_figura_fondo_test(patient_id: str, test_key: str, test_name: str):
+def run_figura_fondo_test(patient_id: str, test_key: str, test_name: str, difficulty: int):
     
     pygame.init()
 
@@ -1243,11 +1243,13 @@ def run_figura_fondo_test(patient_id: str, test_key: str, test_name: str):
     target_rect = pygame.Rect(0, 0, 0, 0)
     buttons = []
 
+    target_shape = "rect"
+    
     def generate_round():
         """
         Genera una figura de bajo contraste y opciones de respuesta.
         """
-        nonlocal target_rect, buttons
+        nonlocal target_rect, buttons, target_shape
 
         x = random.randint(220, 800)
         y = random.randint(180, 430)
@@ -1261,6 +1263,7 @@ def run_figura_fondo_test(patient_id: str, test_key: str, test_name: str):
             {"label": "Círculo", "rect": pygame.Rect(470, 580, 200, 60)},
             {"label": "Triángulo", "rect": pygame.Rect(760, 580, 200, 60)},
         ]
+        target_shape = random.choice(["rect", "circle", "triangle"])
 
     generate_round()
 
@@ -1278,10 +1281,52 @@ def run_figura_fondo_test(patient_id: str, test_key: str, test_name: str):
         )
 
     def draw_playing():
-        screen.fill((205, 205, 205))
+        bg = 205
 
-        pygame.draw.rect(screen, (190, 190, 190), target_rect, border_radius=14)
-        pygame.draw.rect(screen, (198, 198, 198), target_rect.inflate(-8, -8), border_radius=14)
+        if difficulty == 1:        # fácil
+            outer_delta = -60
+            inner_delta = -30
+        elif difficulty == 2:      # medio
+            outer_delta = -30
+            inner_delta = -15
+        else:                      # difícil
+            outer_delta = -12
+            inner_delta = -6
+
+        screen.fill((bg, bg, bg))
+        # Figura externa
+        if target_shape == "rect":
+            pygame.draw.rect(screen, (bg + outer_delta, bg + outer_delta, bg + outer_delta), target_rect, border_radius=14)
+
+        elif target_shape == "circle":
+            pygame.draw.ellipse(screen, (bg + outer_delta, bg + outer_delta, bg + outer_delta), target_rect)
+
+        elif target_shape == "triangle":
+            points = [
+                (target_rect.centerx, target_rect.top),
+                (target_rect.left, target_rect.bottom),
+                (target_rect.right, target_rect.bottom)
+            ]
+            pygame.draw.polygon(screen, (bg + outer_delta, bg + outer_delta, bg + outer_delta), points)
+
+        # Figura interna (efecto contraste leve)
+        inner_rect = target_rect.inflate(-8, -8)
+
+        inner_rect = target_rect.inflate(-8, -8)
+
+        if target_shape == "rect":
+            pygame.draw.rect(screen, (bg + inner_delta, bg + inner_delta, bg + inner_delta), inner_rect, border_radius=14)
+
+        elif target_shape == "circle":
+            pygame.draw.ellipse(screen, (bg + inner_delta, bg + inner_delta, bg + inner_delta), inner_rect)
+
+        elif target_shape == "triangle":
+            points = [
+                (inner_rect.centerx, inner_rect.top),
+                (inner_rect.left, inner_rect.bottom),
+                (inner_rect.right, inner_rect.bottom)
+            ]
+            pygame.draw.polygon(screen, (bg + inner_delta, bg + inner_delta, bg + inner_delta), points)
 
         header = font.render(f"Ronda {current_round + 1}/{rounds}", True, (30, 30, 30))
         screen.blit(header, (40, 30))
@@ -1329,7 +1374,12 @@ def run_figura_fondo_test(patient_id: str, test_key: str, test_name: str):
 
                 for button in buttons:
                     if button["rect"].collidepoint(mouse_x, mouse_y):
-                        if button["label"] == "Rectángulo":
+
+                        if (
+                            (button["label"] == "Rectángulo" and target_shape == "rect") or
+                            (button["label"] == "Círculo" and target_shape == "circle") or
+                            (button["label"] == "Triángulo" and target_shape == "triangle")
+                        ):
                             final_metric += 1
 
                         current_round += 1
@@ -4573,7 +4623,7 @@ class OpenRehabApp:
                 run_cancelacion_estimulos_test(patient_id, test_key, test_name)
 
             elif test_key == "figura_fondo":
-                run_figura_fondo_test(patient_id, test_key, test_name)
+                run_figura_fondo_test(patient_id, test_key, test_name, difficulty)
 
             elif test_key == "acinetopsia":
                 run_acinetopsia_test(patient_id, test_key, test_name, difficulty)
