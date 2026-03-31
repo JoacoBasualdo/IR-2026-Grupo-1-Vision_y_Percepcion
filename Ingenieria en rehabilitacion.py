@@ -9,6 +9,10 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, messagebox
 
+#Import para reconocer audio
+import speech_recognition as sr
+from difflib import SequenceMatcher
+
 #Se lo usa para armar la interfaz interactiva con el usuario
 import pygame
 
@@ -82,16 +86,15 @@ def build_result_filename(patient_id: str, test_key: str) -> Path:
 
 
 #Guarda el resultado. Se ejecuta cuando termina el pygame.
-def save_result_json(patient_id: str, test_key: str, metric_value, unit: str, attempts: int):
-
-
-
+def save_result_json(patient_id: str, test_key: str, metrics_dict: dict, attempts: int):
+    """
+    Guarda el resultado incluyendo métricas avanzadas (omisiones, latencia, redundancia).
+    """
     payload = {
         "id_paciente": patient_id,
         "fecha": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "test": test_key,
-        "metrica_principal": metric_value,
-        "unidad": unit,
+        "metricas": metrics_dict, # Ahora es un objeto con múltiples datos
         "intentos": attempts,
     }
 
@@ -280,6 +283,26 @@ def draw_openrehab_result_screen(screen, width, height, test_name, summary_lines
     secondary_surface = small_font.render(secondary_text, True, theme["text_secondary"])
     screen.blit(secondary_surface, (card.x + 42, card.bottom - 38))
 
+# --- FUNCIÓN DE RECONOCIMIENTO DE VOZ ---
+# --- FUNCIÓN DE VOZ OPTIMIZADA (EVITA CONGELAMIENTO) ---
+def procesar_voz(frase_objetivo):
+    recognizer = sr.Recognizer()
+    # Reducimos drásticamente los tiempos para que no se trabe el juego [cite: 107, 109]
+    try:
+        with sr.Microphone() as source:
+            # Ajuste de ruido ultra rápido
+            recognizer.adjust_for_ambient_noise(source, duration=0.3)
+            # Solo espera 3 segundos. Si el paciente no empieza a hablar, sigue de largo.
+            audio = recognizer.listen(source, timeout=3, phrase_time_limit=5)
+        
+        # Intenta reconocer el texto
+        texto_dicho = recognizer.recognize_google(audio, language="es-ES")
+        similitud = SequenceMatcher(None, frase_objetivo.lower(), texto_dicho.lower()).ratio()
+        return round(similitud * 100, 1)
+    except Exception as e:
+        # Si hay error (silencio, internet, etc), devuelve 0 y NO se traba
+        print(f"Aviso: No se procesó voz ({e})")
+        return 0.0
 
 # ============================================================
 # MOTOR BASE PYGAME PARA LOS TESTS
@@ -498,295 +521,366 @@ def run_pygame_test(patient_id: str, test_key: str, test_name: str):
 # =================================================================
 # CREACIÓN DE CADA MODO DE JUEGO
 # =================================================================
+
+
+import pygame
+import random
+
+# --- CLASE AUXILIAR PARA BOTONES INTERACTIVOS ---
+class Button:
+    def __init__(self, x, y, w, h, text, color, hover_color):
+        self.rect = pygame.Rect(x, y, w, h)
+        self.text = text
+        self.color = color
+        self.hover_color = hover_color
+        self.is_hovered = False
+
+    def draw(self, screen, font):
+        color = self.hover_color if self.is_hovered else self.color
+        pygame.draw.rect(screen, color, self.rect, border_radius=10)
+        pygame.draw.rect(screen, (255, 255, 255), self.rect, 2, border_radius=10)
+        
+        text_surf = font.render(self.text, True, (255, 255, 255))
+        text_rect = text_surf.get_rect(center=self.rect.center)
+        screen.blit(text_surf, text_rect)
+
+    def check_hover(self, mouse_pos):
+        self.is_hovered = self.rect.collidepoint(mouse_pos)
+        return self.is_hovered
+
 def run_exploracion_faro_test(patient_id: str, test_key: str, test_name: str, difficulty: int):
+    # --- 1. CONFIGURACIÓN DE DIFICULTAD Y CONTRASTE ---
+    if difficulty == 1: # FÁCIL
+        duration_seconds, f_radius, t_radius, total_objects = 60, 180, 40, 10
+        color_bg, color_target_unfound = (0, 0, 0), (255, 255, 255) # Contraste Máximo
+    elif difficulty == 2: # MEDIO
+        duration_seconds, f_radius, t_radius, total_objects = 45, 120, 25, 16
+        color_bg, color_target_unfound = (20, 35, 55), (120, 140, 160)
+    else: # DIFÍCIL
+        duration_seconds, f_radius, t_radius, total_objects = 30, 85, 18, 22
+        color_bg, color_target_unfound = (45, 45, 45), (52, 52, 52) # Contraste Mínimo
+
     pygame.init()
     width, height = 1200, 750
     screen = pygame.display.set_mode((width, height))
     pygame.display.set_caption(f"{APP_TITLE} - {test_name}")
     clock = pygame.time.Clock()
     
-    title_font = pygame.font.SysFont("arial", 34, bold=True)
-    font = pygame.font.SysFont("arial", 24)
-    small_font = pygame.font.SysFont("arial", 20)
+    # Fuentes con la estética de la App
+    font_hud = pygame.font.SysFont("arial", 26, bold=True)
+    font_giant = pygame.font.SysFont("arial", 90, bold=True)
+    font_button = pygame.font.SysFont("arial", 24, bold=True)
+    font_report = pygame.font.SysFont("arial", 22)
 
-    # --- CONFIGURACIÓN DINÁMICA SEGÚN DIFICULTAD ---
-    if difficulty == 1:  # FÁCIL
-        flashlight_radius = random.randint(140, 160)
-        total_objects = random.randint(6, 8)
-        target_color = (80, 220, 120)  # Verde brillante
-        duration_seconds = 45
-    elif difficulty == 2:  # MEDIO
-        flashlight_radius = random.randint(95, 115)
-        total_objects = random.randint(12, 15)
-        target_color = (220, 220, 60)   # Amarillo
-        duration_seconds = 40
-    else:  # DIFÍCIL
-        flashlight_radius = random.randint(55, 75)
-        total_objects = random.randint(20, 25)
-        target_color = (65, 65, 70)    # Gris oscuro (Bajo contraste)
-        duration_seconds = 35
-
+    # --- 2. VARIABLES DE ESTADO Y MÉTRICAS ---
     state = "intro"
+    show_report = False
     start_ticks = None
+    first_hit_ticks = None 
     found_count = 0
-    objects = []
+    redundancy_accum = 0
+    last_side = None
+    final_metrics = {}
 
-    # Generación de objetos (Mitad izquierda, mitad derecha para evaluar Neglect)
+    # Generación de estímulos (Balance para evaluar Neglect) [cite: 85]
+    objects = []
     for i in range(total_objects):
         side = "left" if i < total_objects // 2 else "right"
-        x_min = 80 if side == "left" else width // 2 + 80
-        x_max = width // 2 - 80 if side == "left" else width - 80
+        margin = t_radius + 30
+        x_min = margin if side == "left" else width // 2 + margin
+        x_max = width // 2 - margin if side == "left" else width - margin
         objects.append({
             "x": random.randint(x_min, x_max),
-            "y": random.randint(140, height - 80),
-            "r": random.randint(20, 28),
-            "found": False,
-            "side": side
+            "y": random.randint(150, height - margin),
+            "r": t_radius, "found": False, "side": side
         })
+
+    # --- 3. DEFINICIÓN DE BOTONES ---
+    btn_reporte = pygame.Rect(width // 2 - 220, height - 130, 210, 55)
+    btn_volver = pygame.Rect(width // 2 + 10, height - 130, 210, 55)
+    btn_cerrar = pygame.Rect(width // 2 - 100, 560, 200, 45)
 
     running = True
     while running:
-        screen.fill((18, 18, 18))
+        screen.fill(color_bg)
         mx, my = pygame.mouse.get_pos()
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT: running = False
+            
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE: running = False
                 if state == "intro" and event.key == pygame.K_SPACE:
-                    state = "playing"; start_ticks = pygame.time.get_ticks()
-                if state == "result" and event.key == pygame.K_RETURN: running = False
-            
-            # --- DETECCIÓN DE CLICKS CORREGIDA ---
-            elif event.type == pygame.MOUSEBUTTONDOWN and state == "playing":
-                click_x, click_y = event.pos
-                for obj in objects:
-                    if not obj["found"]:
-                        # Pitágoras para colisión circular exacta
-                        dist = ((click_x - obj["x"])**2 + (click_y - obj["y"])**2)**0.5
-                        if dist <= obj["r"]: 
-                            obj["found"] = True
-                            found_count += 1
-                            break
+                    state = "playing"
+                    start_ticks = pygame.time.get_ticks()
+                elif state == "result" and event.key == pygame.K_RETURN and not show_report:
+                    running = False
 
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                if state == "playing":
+                    for obj in objects:
+                        if not obj["found"]:
+                            dist = ((mx - obj["x"])**2 + (my - obj["y"])**2)**0.5
+                            if dist <= obj["r"]:
+                                obj["found"] = True
+                                found_count += 1
+                                if found_count == 1: first_hit_ticks = pygame.time.get_ticks()
+                                break
+                elif state == "result":
+                    if btn_reporte.collidepoint(mx, my) and not show_report:
+                        show_report = True
+                    elif btn_volver.collidepoint(mx, my) and not show_report:
+                        running = False
+                    elif btn_cerrar.collidepoint(mx, my) and show_report:
+                        show_report = False
+
+        # --- LÓGICA DE RENDERIZADO ---
         if state == "intro":
-            draw_openrehab_intro_screen(
-                screen,
-                width,
-                height,
-                test_name,
-                patient_id,
-                [
-                    "Buscá y marcá todos los objetivos con la linterna.",
-                    "La mitad de los objetos estará a la izquierda y la otra mitad a la derecha.",
-                ],
-                start_text="ESPACIO para comenzar",
-                back_text="ESC para volver al menú",
-                badge_text=f"Nivel {difficulty}",
-            )
+            draw_openrehab_intro_screen(screen, width, height, test_name, patient_id, 
+                ["Explorá toda la pantalla con tu linterna.", "Encontrá los objetos ocultos para mejorar tu visión."], 
+                "ESPACIO para comenzar", "ESC para salir", f"Nivel {difficulty}")
 
         elif state == "playing":
             elapsed = (pygame.time.get_ticks() - start_ticks) / 1000
             remaining = max(0, duration_seconds - elapsed)
-            
-            for obj in objects:
-                dist_luz = ((mx - obj["x"])**2 + (my - obj["y"])**2)**0.5
-                if obj["found"]:
-                    pygame.draw.circle(screen, (80, 220, 120), (obj["x"], obj["y"]), obj["r"])
-                elif dist_luz <= flashlight_radius:
-                    pygame.draw.circle(screen, target_color, (obj["x"], obj["y"]), obj["r"])
 
+            # Redundancia: cruces de mirada para evaluar memoria de trabajo [cite: 41, 42]
+            current_side = "L" if mx < width/2 else "R"
+            if last_side and current_side != last_side: redundancy_accum += 1
+            last_side = current_side
+
+            for obj in objects:
+                dist = ((mx - obj["x"])**2 + (my - obj["y"])**2)**0.5
+                if obj["found"]:
+                    pygame.draw.circle(screen, (114, 211, 154), (obj["x"], obj["y"]), obj["r"])
+                elif dist <= f_radius:
+                    pygame.draw.circle(screen, color_target_unfound, (obj["x"], obj["y"]), obj["r"])
+
+            # Capa de oscuridad estética
             darkness = pygame.Surface((width, height), pygame.SRCALPHA)
-            darkness.fill((0, 0, 0, 240))
-            pygame.draw.circle(darkness, (0, 0, 0, 0), (mx, my), flashlight_radius)
+            darkness.fill((10, 37, 64, 252)) # Azul OpenRehab
+            pygame.draw.circle(darkness, (0, 0, 0, 0), (mx, my), f_radius)
             screen.blit(darkness, (0, 0))
-            pygame.draw.circle(screen, (200, 200, 200), (mx, my), flashlight_radius, 2)
-            
+            pygame.draw.circle(screen, (79, 195, 247), (mx, my), f_radius, 3) # Borde azul celeste
+
+            # HUD
+            screen.blit(font_hud.render(f"Tiempo: {int(remaining)}s", True, (255, 214, 102)), (width - 180, 35))
+            screen.blit(font_hud.render(f"Objetivos: {found_count}/{total_objects}", True, (244, 248, 252)), (40, 35))
+
             if found_count == total_objects or remaining <= 0:
-                save_result_json(patient_id, test_key, found_count, "objetos", 1)
+                # Métricas diagnósticas [cite: 31, 37, 39, 41]
+                lat = (first_hit_ticks - start_ticks)/1000 if first_hit_ticks else elapsed
+                om_i = sum(1 for o in objects if not o["found"] and o["side"] == "left")
+                om_d = sum(1 for o in objects if not o["found"] and o["side"] == "right")
+                eficiencia = found_count / elapsed if elapsed > 0 else 0
+                porc = (found_count / total_objects) * 100
+
+                # Feedback Motivante
+                if porc >= 90:
+                    msg, rango = "¡Excelente rendimiento! Dominio visual total.", "EXCELENTE"
+                elif porc >= 60:
+                    msg, rango = "¡Muy bien! Estás ampliando tu campo visual con éxito.", "BIEN HECHO"
+                else:
+                    msg = "¡Buen esfuerzo! Intentá explorar más el lado izquierdo." if om_i > om_d else "¡Seguí practicando! Tu persistencia dará frutos."
+                    rango = "SIGUE ASÍ"
+
+                final_metrics = {"lat": round(lat, 2), "om_i": om_i, "om_d": om_d, "red": redundancy_accum // 2, "msg": msg, "rango": rango}
+                save_result_json(patient_id, test_key, final_metrics, 1)
                 state = "result"
 
         elif state == "result":
-            draw_openrehab_result_screen(
-                screen,
-                width,
-                height,
-                test_name,
-                [f"Objetivos encontrados: {found_count}"],
-                action_text="ENTER para volver",
-                secondary_text="ESC para salir",
-                title="Test finalizado",
-                badge_text="Resumen final",
-            )
+            screen.fill((10, 37, 64)) # Fondo azul marca
+            
+            if not show_report:
+                # Pantalla de Rango Gigante
+                txt_surf = font_giant.render(final_metrics["rango"], True, (114, 211, 154))
+                screen.blit(txt_surf, (width//2 - txt_surf.get_width()//2, 220))
+                
+                msg_surf = font_hud.render(final_metrics["msg"], True, (199, 217, 234))
+                screen.blit(msg_surf, (width//2 - msg_surf.get_width()//2, 340))
+
+                # Dibujar Botones
+                for b, txt, col in [(btn_reporte, "VER INFORME", (79, 195, 247)), (btn_volver, "VOLVER", (36, 72, 110))]:
+                    pygame.draw.rect(screen, col, b, border_radius=12)
+                    t_s = font_button.render(txt, True, (255, 255, 255))
+                    screen.blit(t_s, t_s.get_rect(center=b.center))
+            else:
+                # Pop-up de Informe Médico Detallado [cite: 36]
+                pygame.draw.rect(screen, (244, 248, 252), (width//2 - 300, 150, 600, 480), border_radius=20)
+                pygame.draw.rect(screen, (43, 92, 136), (width//2 - 300, 150, 600, 480), 3, border_radius=20)
+                
+                t_rep = font_button.render("INFORME CLÍNICO DETALLADO", True, (10, 37, 64))
+                screen.blit(t_rep, (width//2 - t_rep.get_width()//2, 180))
+                
+                info_lines = [
+                    f"Latencia al primer hallazgo: {final_metrics['lat']}s",
+                    f"Omisiones Lado Izquierdo: {final_metrics['om_i']}",
+                    f"Omisiones Lado Derecho: {final_metrics['om_d']}",
+                    f"Redundancia (Cruces de línea media): {final_metrics['red']}",
+                    f"Efectividad de rastreo: {int((found_count/total_objects)*100)}%"
+                ]
+                for i, line in enumerate(info_lines):
+                    l_s = font_report.render(line, True, (36, 72, 110))
+                    screen.blit(l_s, (width//2 - 240, 260 + (i * 45)))
+
+                pygame.draw.rect(screen, (180, 50, 50), btn_cerrar, border_radius=10)
+                c_s = font_button.render("CERRAR", True, (255, 255, 255))
+                screen.blit(c_s, c_s.get_rect(center=btn_cerrar.center))
 
         pygame.display.flip()
         clock.tick(60)
     pygame.quit()
+    
 
 def run_anclaje_visual_test(patient_id: str, test_key: str, test_name: str, difficulty: int):
-    
+    # --- CONFIGURACIÓN DE NIVELES Y FRASES OPTIMIZADAS ---
+    if difficulty == 1: # FÁCIL
+        ancla_w, blink_speed, area_tolerancia, mov_x, mov_y = 65, 450, 45, 0, 0
+        frases = [
+            "El sol sale por el este.", 
+            "El gato toma leche fresca.", 
+            "La casa es de color azul.",
+            "Hoy es un día despejado."
+        ] # [cite: 54, 57]
+    elif difficulty == 2: # MEDIO
+        ancla_w, blink_speed, area_tolerancia, mov_x, mov_y = 35, 750, 25, 40, 80
+        frases = [
+            "La corteza cerebral procesa la información sensorial compleja.",
+            "El hemisferio derecho coordina la orientación espacial del cuerpo.",
+            "La plasticidad neuronal permite la recuperación de funciones perdidas.",
+            "La atención sostenida es vital para completar tareas cotidianas."
+        ] # [cite: 60, 63]
+    else: # DIFÍCIL
+        ancla_w, blink_speed, area_tolerancia, mov_x, mov_y = 15, 0, 8, 100, 220
+        frases = [
+            "La heminegligencia espacial resulta de lesiones en el lóbulo parietal posterior.",
+            "El sistema de activación reticular influye en el estado de alerta del paciente.",
+            "Los movimientos sacádicos permiten desplazar el foco atencional rápidamente.",
+            "La decodificación fonológica integra áreas visuales y auditivas del lenguaje."
+        ] # [cite: 66, 69]
+
     pygame.init()
     width, height = 1200, 750
     screen = pygame.display.set_mode((width, height))
-    pygame.display.set_caption(f"{APP_TITLE} - {test_name}")
     clock = pygame.time.Clock()
-    
-    # Fuentes para mayor legibilidad y estética
-    font_main = pygame.font.SysFont("arial", 28)
+
+    # Fuentes y Botones
+    font_text = pygame.font.SysFont("arial", 30)
+    font_hud = pygame.font.SysFont("arial", 26, bold=True)
+    font_giant = pygame.font.SysFont("arial", 90, bold=True)
     font_button = pygame.font.SysFont("arial", 24, bold=True)
-    font_title = pygame.font.SysFont("arial", 36, bold=True)
+    font_report = pygame.font.SysFont("arial", 22)
 
-    # --- CONFIGURACIÓN DE TEXTOS Y PARÁMETROS SEGÚN DIFICULTAD ---
-    if difficulty == 1: # FÁCIL
-        sentences = [
-            "El sol sale cada mañana.", "La casa es de color azul.",
-            "El gato duerme en el sofa.", "Tengo una manzana roja.",
-            "El agua esta muy fria."
-        ]
-        blink_speed = 35 
-        # Rangos de tamaño (más grandes)
-        w_range = (40, 60); h_range = (350, 450)
-        # Rango de posición (muy a la izquierda)
-        x_range = (10, 30); y_range = (120, 180)
-        
-    elif difficulty == 2: # MEDIO
-        sentences = [
-            "La rehabilitacion requiere constancia y paciencia.",
-            "Es importante realizar los ejercicios cada dia.",
-            "El sistema visual procesa mucha informacion compleja.",
-            "Caminar por el parque mejora el estado de animo.",
-            "La tecnologia ayuda a recuperar funciones perdidas."
-        ]
-        blink_speed = 20
-        w_range = (20, 35); h_range = (250, 350)
-        # Rango de posición (un poco más hacia el centro-izquierda)
-        x_range = (10, 60); y_range = (100, 250)
-        
-    else: # DIFÍCIL (Alto desafío visual)
-        sentences = [
-            "El lóbulo parietal derecho es fundamental para la atencion espacial y el procesamiento visual.",
-            "El neglect es un trastorno neurologico donde se ignora informacion de un sector del espacio.",
-            "Las dificultades en el procesamiento visual complejo involucran problemas en las vias corticales.",
-            "La plasticidad cerebral permite que el cerebro se adapte y recupere capacidades tras un ACV.",
-            "El entrenamiento constante del anclaje visual mejora la autonomia en las actividades diarias."
-        ]
-        blink_speed = 10 
-        w_range = (8, 18); h_range = (150, 250)
-        # Rango de posición (mayor dispersión en el cuadrante izquierdo)
-        x_range = (10, 100); y_range = (80, 400)
-
-    # Variables de estado del juego
     state = "intro"
-    current_trial = 0
-    bar_active = False # Controla si el texto es visible
-    timer = 0
-    num_trials = 5
+    show_report = False
+    current_idx = 0
+    # Posición inicial del ancla
+    ancla_x, ancla_y = 15, 200 
     
-    # Variables de la barra (se inicializan vacías)
-    current_bar_rect = pygame.Rect(0, 0, 0, 0)
+    latencias, precisiones, tiempos_lectura, validez_vocal = [], [], [], []
+    final_metrics = {}
 
-    # Función interna para reposicionar la barra aleatoriamente
-    def randomize_bar():
-        nonlocal current_bar_rect
-        w = random.randint(w_range[0], w_range[1])
-        h = random.randint(h_range[0], h_range[1])
-        x = random.randint(x_range[0], x_range[1])
-        y = random.randint(y_range[0], y_range[1])
-        current_bar_rect = pygame.Rect(x, y, w, h)
-
-    # Generamos la primera posición
-    randomize_bar()
+    btn_reporte = pygame.Rect(width // 2 - 220, height - 130, 210, 55)
+    btn_volver = pygame.Rect(width // 2 + 10, height - 130, 210, 55)
+    btn_cerrar = pygame.Rect(width // 2 - 100, 560, 200, 45)
 
     running = True
     while running:
-        screen.fill((245, 245, 245)) # Fondo claro (Alto Contraste)
+        screen.fill((10, 37, 64)) 
         mx, my = pygame.mouse.get_pos()
+        t_now = pygame.time.get_ticks()
 
         for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                running = False
-            elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE: running = False
-                if state == "intro" and event.key == pygame.K_SPACE: state = "playing"
-                if state == "result" and event.key == pygame.K_RETURN: running = False
-            
-            elif event.type == pygame.MOUSEBUTTONDOWN and state == "playing":
-                # 1. Tocar la barra de anclaje (usamos collidepoint para colisión exacta)
-                if not bar_active:
-                    if current_bar_rect.collidepoint(mx, my):
-                        bar_active = True
-                        
-                # 2. Presionar el botón Siguiente
-                elif 900 <= mx <= 1100 and 550 <= my <= 630:
-                    current_trial += 1
-                    bar_active = False
-                    if current_trial < num_trials:
-                        # Reposicionar la barra para el siguiente intento
-                        randomize_bar()
-                    else:
-                        save_result_json(patient_id, test_key, num_trials, "anclajes", 1)
-                        state = "result"
+            if event.type == pygame.QUIT: running = False
+            if event.type == pygame.KEYDOWN:
+                if state == "intro" and event.key == pygame.K_SPACE:
+                    state = "waiting_anchor"
+                    start_ancla_time = t_now
+                elif state == "result" and event.key == pygame.K_RETURN:
+                    running = False
 
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                if state == "waiting_anchor":
+                    ancla_rect = pygame.Rect(ancla_x, ancla_y, ancla_w, 350)
+                    colision = ancla_rect.inflate(area_tolerancia, area_tolerancia)
+                    if colision.collidepoint(event.pos):
+                        latencias.append((t_now - start_ancla_time) / 1000)
+                        dist = ((event.pos[0]-ancla_rect.centerx)**2 + (event.pos[1]-ancla_rect.centery)**2)**0.5
+                        precisiones.append(dist)
+                        state = "reading"
+                        start_lectura_time = t_now
+                elif state == "result":
+                    if btn_reporte.collidepoint(mx, my): show_report = True
+                    elif btn_volver.collidepoint(mx, my): running = False
+                    elif btn_cerrar.collidepoint(mx, my): show_report = False
+
+        # --- RENDERIZADO DE ESTADOS ---
         if state == "intro":
-            draw_openrehab_intro_screen(
-                screen,
-                width,
-                height,
-                test_name,
-                patient_id,
-                [
-                    "Tocá la barra parpadeante a la izquierda para habilitar el texto.",
-                    "Después presioná SIGUIENTE para avanzar al próximo intento.",
-                ],
-                start_text="ESPACIO para comenzar",
-                back_text="ESC para volver al menú",
-                badge_text="Anclaje visual",
-            )
+            draw_openrehab_intro_screen(screen, width, height, test_name, patient_id, 
+                ["Escanea el borde izquierdo para habilitar la lectura.", "Lee las frases técnicas en voz alta."], 
+                "ESPACIO para comenzar", "ESC para salir", f"Nivel {difficulty}")
 
-        elif state == "playing":
-            # Barra de progreso estética
-            pygame.draw.rect(screen, (200, 200, 200), (20, 20, 1160, 10))
-            pygame.draw.rect(screen, (72, 211, 154), (20, 20, (current_trial/num_trials)*1160, 10))
+        elif state == "waiting_anchor":
+            # Ancla dinámica en X e Y (siempre sector izquierdo)
+            if blink_speed == 0 or (t_now // blink_speed) % 2 == 0:
+                pygame.draw.rect(screen, (220, 20, 20), (ancla_x, ancla_y, ancla_w, 350), border_radius=8)
 
-            # Dibujar la barra roja (parpadeo variable según dificultad)
-            timer += 1
-            if not bar_active: # Solo parpadea si no ha sido tocada
-                if (timer // blink_speed) % 2 == 0:
-                    pygame.draw.rect(screen, (255, 0, 0), current_bar_rect, border_radius=5)
+        elif state == "reading":
+            screen.fill((244, 248, 252))
+            pygame.draw.rect(screen, (220, 20, 20), (ancla_x, ancla_y, ancla_w, 350)) 
+            txt_surf = font_text.render(frases[current_idx], True, (10, 37, 64))
+            screen.blit(txt_surf, (200, height//2))
+            screen.blit(font_hud.render("SISTEMA DE AUDIO ACTIVO - Lee ahora", True, (200, 30, 30)), (400, 600))
+            pygame.display.flip()
+            
+            validez = procesar_voz(frases[current_idx])
+            validez_vocal.append(validez)
+            tiempos_lectura.append((pygame.time.get_ticks() - start_lectura_time) / 1000)
+            
+            current_idx += 1
+            if current_idx >= len(frases):
+                # Cálculos finales
+                avg_lat = round(sum(latencias)/len(latencias), 2)
+                avg_prec = round(sum(precisiones)/len(precisiones), 1)
+                avg_val = round(sum(validez_vocal)/len(validez_vocal), 1)
+                avg_lect = round(sum(tiempos_lectura)/len(tiempos_lectura), 1)
+                
+                rango = "EXCELENTE!" if avg_val > 80 else ("BIEN HECHO" if avg_val > 60 else "PUEDES SEGUIR MEJORANDO")
+                final_metrics = {"lat": avg_lat, "prec": avg_prec, "val": avg_val, "lect": avg_lect, "rango": rango}
+                save_result_json(patient_id, test_key, final_metrics, 1)
+                state = "result"
             else:
-                # Si ya se tocó, dibujarla fija en verde para indicar éxito
-                pygame.draw.rect(screen, (40, 180, 80), current_bar_rect, border_radius=5)
-                
-                # Mostrar texto complejo (centrado respecto a la barra habilitada)
-                txt_surf = font_main.render(sentences[current_trial % len(sentences)], True, (0, 0, 0))
-                # Ajustamos la X del texto para que no pise la barra si esta se mueve muy a la derecha
-                text_x = max(150, current_bar_rect.right + 30)
-                screen.blit(txt_surf, (text_x, current_bar_rect.centery - 15))
-                
-                # Botón "Siguiente" visible y estético
-                btn_rect = pygame.Rect(900, 550, 200, 80)
-                # Sombra y cuerpo del botón
-                pygame.draw.rect(screen, (40, 40, 40), (905, 555, 200, 80), border_radius=15)
-                pygame.draw.rect(screen, (0, 123, 255), btn_rect, border_radius=15)
-                btn_txt = font_button.render("SIGUIENTE", True, (255, 255, 255))
-                screen.blit(btn_txt, (935, 575))
+                # Movimiento horizontal y vertical restringido a la izquierda [cite: 73]
+                ancla_x = random.randint(10, 10 + mov_x)
+                ancla_y = random.randint(50, 50 + mov_y)
+                state = "waiting_anchor"
+                start_ancla_time = pygame.time.get_ticks()
 
         elif state == "result":
-            draw_openrehab_result_screen(
-                screen,
-                width,
-                height,
-                test_name,
-                [f"Se han completado {num_trials} lecturas con éxito."],
-                action_text="ENTER para volver al menú",
-                secondary_text="ESC para salir",
-                title="Tarea completada",
-                badge_text="Resumen final",
-            )
+            if not show_report:
+                txt_surf = font_giant.render(final_metrics["rango"], True, (114, 211, 154))
+                screen.blit(txt_surf, (width//2 - txt_surf.get_width()//2, 220))
+                pygame.draw.rect(screen, (79, 195, 247), btn_reporte, border_radius=12)
+                screen.blit(font_button.render("VER INFORME", True, (255, 255, 255)), font_button.render("VER INFORME", True, (255, 255, 255)).get_rect(center=btn_reporte.center))
+                pygame.draw.rect(screen, (36, 72, 110), btn_volver, border_radius=12)
+                screen.blit(font_button.render("VOLVER", True, (255, 255, 255)), font_button.render("VOLVER", True, (255, 255, 255)).get_rect(center=btn_volver.center))
+            else:
+                pygame.draw.rect(screen, (244, 248, 252), (width//2 - 300, 150, 600, 480), border_radius=20)
+                info = [
+                    f"Latencia activación: {final_metrics['lat']}s",
+                    f"Precisión motora: {final_metrics['prec']} px",
+                    f"Tiempo lectura: {final_metrics['lect']}s",
+                    f"Validez de voz: {final_metrics['val']}%"
+                ]
+                for i, line in enumerate(info):
+                    screen.blit(font_report.render(line, True, (36, 72, 110)), (width//2 - 240, 270 + (i * 50)))
+                pygame.draw.rect(screen, (180, 50, 50), btn_cerrar, border_radius=10)
+                screen.blit(font_button.render("CERRAR", True, (255, 255, 255)), font_button.render("CERRAR", True, (255, 255, 255)).get_rect(center=btn_cerrar.center))
 
         pygame.display.flip()
         clock.tick(60)
     pygame.quit()
+    
 def run_complejidad_gradual_test(patient_id: str, test_key: str, test_name: str):
     
     pygame.init()
