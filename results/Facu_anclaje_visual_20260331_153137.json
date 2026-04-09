@@ -1,0 +1,13 @@
+{
+    "id_paciente": "Facu",
+    "fecha": "2026-03-31 15:31:37",
+    "test": "anclaje_visual",
+    "metricas": {
+        "lat": 1.86,
+        "prec": 54.8,
+        "val": 94.1,
+        "lect": 5.9,
+        "rango": "EXCELENTE!"
+    },
+    "intentos": 1
+}

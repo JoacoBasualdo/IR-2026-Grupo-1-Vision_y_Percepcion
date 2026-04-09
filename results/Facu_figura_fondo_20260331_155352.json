@@ -1,0 +1,15 @@
+{
+    "id_paciente": "Facu",
+    "fecha": "2026-03-31 15:53:52",
+    "test": "figura_fondo",
+    "metricas": {
+        "correctas": 4,
+        "incorrectas": 1,
+        "total": 5,
+        "tiempo": 4.28,
+        "porcentaje": 80,
+        "rango": "MUY BIEN",
+        "msg": "Muy buen trabajo. Solo hubo una identificación incorrecta."
+    },
+    "intentos": 1
+}
