@@ -1,0 +1,9 @@
+{
+    "id_paciente": "Facu",
+    "fecha": "2026-04-09 11:30:51",
+    "test": "efecto_stroop",
+    "metricas": {
+        "aciertos": 5
+    },
+    "intentos": 1
+}

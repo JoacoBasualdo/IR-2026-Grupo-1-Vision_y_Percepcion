@@ -9,6 +9,10 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, messagebox
 
+#Import para reconocer audio
+import speech_recognition as sr
+from difflib import SequenceMatcher
+
 #Se lo usa para armar la interfaz interactiva con el usuario
 import pygame
 
@@ -82,16 +86,15 @@ def build_result_filename(patient_id: str, test_key: str) -> Path:
 
 
 #Guarda el resultado. Se ejecuta cuando termina el pygame.
-def save_result_json(patient_id: str, test_key: str, metric_value, unit: str, attempts: int):
-
-
-
+def save_result_json(patient_id: str, test_key: str, metrics_dict: dict, attempts: int):
+    """
+    Guarda el resultado incluyendo métricas avanzadas (omisiones, latencia, redundancia).
+    """
     payload = {
         "id_paciente": patient_id,
         "fecha": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "test": test_key,
-        "metrica_principal": metric_value,
-        "unidad": unit,
+        "metricas": metrics_dict, # Ahora es un objeto con múltiples datos
         "intentos": attempts,
     }
 
@@ -130,6 +133,280 @@ def get_last_result_for_test(patient_id: str, test_key: str):
             return result
     return None
 
+
+def get_metric_summary(result: dict) -> str:
+    """
+    Devuelve un resumen corto y legible de las métricas para mostrar en historial/comparación.
+    """
+    metricas = result.get("metricas", {}) or {}
+
+    priority_keys = [
+        "correctas", "encontrados", "lat", "val", "tiempo", "porcentaje",
+        "om_i", "hits", "desvios", "niveles_superados", "clicks_totales"
+    ]
+    labels = {
+        "correctas": "Correctas",
+        "incorrectas": "Incorrectas",
+        "encontrados": "Encontrados",
+        "no_encontrados": "No encontrados",
+        "lat": "Latencia",
+        "val": "Validez",
+        "tiempo": "Tiempo",
+        "tiempo_promedio": "Tiempo prom.",
+        "porcentaje": "Acierto",
+        "om_i": "Omisiones izq.",
+        "om_d": "Omisiones der.",
+        "red": "Redundancia",
+        "clicks_totales": "Clicks",
+        "misclicks": "Misclicks",
+        "prec": "Precisión",
+        "lect": "Lectura",
+        "msg": "Mensaje",
+        "rango": "Rango",
+    }
+
+    parts = []
+    for key in priority_keys:
+        if key in metricas:
+            value = metricas[key]
+            if key == "porcentaje":
+                value = f"{value}%"
+            elif key in ("tiempo", "tiempo_promedio", "lat", "lect"):
+                value = f"{value}s"
+            parts.append(f"{labels.get(key, key)}: {value}")
+        if len(parts) >= 2:
+            break
+
+    if not parts and metricas:
+        first_items = list(metricas.items())[:2]
+        for key, value in first_items:
+            parts.append(f"{labels.get(key, key)}: {value}")
+
+    return " | ".join(parts) if parts else "Sin métricas disponibles"
+
+
+def build_report_lines(result: dict) -> list[str]:
+    """
+    Convierte el JSON guardado en una lista de líneas para visualizar como informe.
+    """
+    metricas = result.get("metricas", {}) or {}
+    labels = {
+        "correctas": "Figuras correctas",
+        "incorrectas": "Figuras incorrectas",
+        "total": "Total",
+        "tiempo": "Tiempo total",
+        "tiempo_promedio": "Tiempo promedio",
+        "porcentaje": "Porcentaje de acierto",
+        "encontrados": "Objetivos encontrados",
+        "no_encontrados": "Objetivos no encontrados",
+        "clicks_totales": "Clicks totales",
+        "misclicks": "Misclicks",
+        "lat": "Latencia al primer hallazgo",
+        "om_i": "Omisiones lado izquierdo",
+        "om_d": "Omisiones lado derecho",
+        "red": "Redundancia",
+        "prec": "Precisión motora",
+        "val": "Validez de voz",
+        "lect": "Tiempo de lectura",
+        "rango": "Rango",
+        "msg": "Interpretación",
+    }
+
+    lines = [
+        f"Paciente: {result.get('id_paciente', '-')}",
+        f"Fecha: {result.get('fecha', '-')}",
+        f"Test: {result.get('test', '-')}",
+        ""
+    ]
+
+    for key, value in metricas.items():
+        if key == "tiempo_maximo":
+            continue
+        if key == "porcentaje":
+            display = f"{value}%"
+        elif key in ("tiempo", "tiempo_promedio", "lat", "lect"):
+            display = f"{value}s"
+        elif key == "val":
+            display = f"{value}%"
+        else:
+            display = value
+        lines.append(f"{labels.get(key, key)}: {display}")
+
+    if len(lines) == 4:
+        lines.append("No hay métricas detalladas disponibles para este resultado.")
+
+    return lines
+
+
+
+OPENREHAB_PYGAME_THEME = {
+    "bg_main": (10, 37, 64),
+    "bg_band": (16, 47, 78),
+    "bg_card": (22, 58, 99),
+    "border_card": (43, 92, 136),
+    "text_primary": (244, 248, 252),
+    "text_secondary": (199, 217, 234),
+    "accent_blue": (79, 195, 247),
+    "accent_green": (114, 211, 154),
+    "accent_green_soft": (139, 227, 174),
+    "accent_warning": (255, 214, 102),
+}
+
+def _wrap_pygame_text(text, font, max_width):
+    words = text.split()
+    if not words:
+        return [""]
+    lines = []
+    current = words[0]
+    for word in words[1:]:
+        test_line = f"{current} {word}"
+        if font.size(test_line)[0] <= max_width:
+            current = test_line
+        else:
+            lines.append(current)
+            current = word
+    lines.append(current)
+    return lines
+
+def _draw_openrehab_shell(screen, width, height):
+    theme = OPENREHAB_PYGAME_THEME
+    screen.fill(theme["bg_main"])
+    pygame.draw.rect(screen, theme["bg_band"], pygame.Rect(0, 0, width, 16), border_radius=0)
+    pygame.draw.rect(screen, theme["accent_green_soft"], pygame.Rect(0, height - 10, width, 4), border_radius=0)
+    pygame.draw.rect(screen, theme["accent_blue"], pygame.Rect(0, height - 6, width, 6), border_radius=0)
+
+    deco_surface = pygame.Surface((width, height), pygame.SRCALPHA)
+    pygame.draw.circle(deco_surface, (255, 255, 255, 18), (width - 140, 120), 90)
+    pygame.draw.circle(deco_surface, (255, 255, 255, 10), (100, height - 90), 70)
+    pygame.draw.circle(deco_surface, (255, 255, 255, 8), (width - 260, height - 120), 48)
+    screen.blit(deco_surface, (0, 0))
+
+def _draw_openrehab_card(screen, rect):
+    theme = OPENREHAB_PYGAME_THEME
+    shadow_rect = rect.move(8, 10)
+    shadow = pygame.Surface((shadow_rect.width, shadow_rect.height), pygame.SRCALPHA)
+    pygame.draw.rect(shadow, (0, 0, 0, 70), shadow.get_rect(), border_radius=28)
+    screen.blit(shadow, shadow_rect.topleft)
+
+    pygame.draw.rect(screen, theme["bg_card"], rect, border_radius=28)
+    pygame.draw.rect(screen, theme["border_card"], rect, 2, border_radius=28)
+    pygame.draw.rect(screen, (29, 77, 127), pygame.Rect(rect.x, rect.y, rect.width, 10), border_radius=28)
+
+
+def draw_openrehab_intro_screen(screen, width, height, test_name, patient_id, instructions, start_text="Presioná ESPACIO para comenzar.", back_text="ESC para volver al menú.", badge_text=None):
+    theme = OPENREHAB_PYGAME_THEME
+    _draw_openrehab_shell(screen, width, height)
+
+    title_font = pygame.font.SysFont("arial", 34, bold=True)
+    subtitle_font = pygame.font.SysFont("arial", 22)
+    body_font = pygame.font.SysFont("arial", 34)
+    small_font = pygame.font.SysFont("arial", 20)
+    button_font = pygame.font.SysFont("arial", 22, bold=True)
+
+    header_x = 72
+    screen.blit(title_font.render("OpenRehab ACV", True, theme["text_primary"]), (header_x, 46))
+    screen.blit(subtitle_font.render("Evaluación interactiva", True, theme["text_secondary"]), (header_x, 88))
+    screen.blit(title_font.render(test_name, True, theme["text_primary"]), (header_x, 138))
+
+    card = pygame.Rect(64, 208, width - 128, height - 292)
+    _draw_openrehab_card(screen, card)
+
+    if badge_text:
+        badge_rect = pygame.Rect(card.x + 34, card.y + 34, 230, 42)
+        pygame.draw.rect(screen, (36, 72, 110), badge_rect, border_radius=20)
+        pygame.draw.rect(screen, theme["border_card"], badge_rect, 1, border_radius=20)
+        badge_surface = small_font.render(badge_text, True, theme["text_primary"])
+        screen.blit(badge_surface, (badge_rect.x + 18, badge_rect.y + 10))
+
+    patient_rect = pygame.Rect(card.right - 300, card.y + 34, 260, 42)
+    pygame.draw.rect(screen, (36, 72, 110), patient_rect, border_radius=20)
+    pygame.draw.rect(screen, theme["border_card"], patient_rect, 1, border_radius=20)
+    patient_surface = small_font.render(f"Paciente: {patient_id}", True, theme["accent_warning"])
+    screen.blit(patient_surface, (patient_rect.x + 16, patient_rect.y + 10))
+
+    current_y = card.y + 140
+    max_width = card.width - 120
+
+    for line in instructions:
+        wrapped = _wrap_pygame_text(line, body_font, max_width)
+        for wrapped_line in wrapped:
+            text_surface = body_font.render(wrapped_line, True, theme["text_secondary"])
+            text_rect = text_surface.get_rect(center=(width // 2, current_y))
+            screen.blit(text_surface, text_rect)
+            current_y += 42
+        current_y += 10
+
+    button_rect = pygame.Rect(card.x + 42, card.bottom - 106, 390, 56)
+    pygame.draw.rect(screen, theme["accent_green"], button_rect, border_radius=18)
+    button_text = button_font.render(start_text, True, (10, 37, 64))
+    text_rect = button_text.get_rect(center=button_rect.center)
+    screen.blit(button_text, text_rect)
+
+    back_surface = small_font.render(back_text, True, theme["text_secondary"])
+    screen.blit(back_surface, (card.x + 42, card.bottom - 38))
+
+def draw_openrehab_result_screen(screen, width, height, test_name, summary_lines, action_text="ENTER para volver al menú", secondary_text="ESC para salir", title="Test finalizado", badge_text="Resultado"):
+    theme = OPENREHAB_PYGAME_THEME
+    _draw_openrehab_shell(screen, width, height)
+
+    title_font = pygame.font.SysFont("arial", 34, bold=True)
+    subtitle_font = pygame.font.SysFont("arial", 22)
+    body_font = pygame.font.SysFont("arial", 24)
+    small_font = pygame.font.SysFont("arial", 20)
+    button_font = pygame.font.SysFont("arial", 22, bold=True)
+
+    header_x = 72
+    screen.blit(title_font.render("OpenRehab ACV", True, theme["text_primary"]), (header_x, 46))
+    screen.blit(subtitle_font.render("Resumen del test", True, theme["text_secondary"]), (header_x, 88))
+    screen.blit(title_font.render(test_name, True, theme["text_primary"]), (header_x, 138))
+
+    card = pygame.Rect(64, 208, width - 128, height - 292)
+    _draw_openrehab_card(screen, card)
+
+    badge_rect = pygame.Rect(card.x + 34, card.y + 34, 190, 42)
+    pygame.draw.rect(screen, (36, 72, 110), badge_rect, border_radius=20)
+    pygame.draw.rect(screen, theme["border_card"], badge_rect, 1, border_radius=20)
+    screen.blit(small_font.render(badge_text, True, theme["text_primary"]), (badge_rect.x + 18, badge_rect.y + 10))
+
+    status_surface = title_font.render(title, True, theme["accent_green_soft"])
+    screen.blit(status_surface, (card.x + 40, card.y + 96))
+
+    current_y = card.y + 168
+    max_width = card.width - 84
+    for line in summary_lines:
+        for wrapped_line in _wrap_pygame_text(line, body_font, max_width):
+            screen.blit(body_font.render(wrapped_line, True, theme["text_secondary"]), (card.x + 42, current_y))
+            current_y += 34
+        current_y += 10
+
+    button_rect = pygame.Rect(card.x + 42, card.bottom - 106, 340, 56)
+    pygame.draw.rect(screen, theme["accent_blue"], button_rect, border_radius=18)
+    button_text = button_font.render(action_text, True, (244, 248, 252))
+    screen.blit(button_text, button_text.get_rect(center=button_rect.center))
+
+    secondary_surface = small_font.render(secondary_text, True, theme["text_secondary"])
+    screen.blit(secondary_surface, (card.x + 42, card.bottom - 38))
+
+# --- FUNCIÓN DE RECONOCIMIENTO DE VOZ ---
+# --- FUNCIÓN DE VOZ OPTIMIZADA (EVITA CONGELAMIENTO) ---
+def procesar_voz(frase_objetivo):
+    recognizer = sr.Recognizer()
+    # Reducimos drásticamente los tiempos para que no se trabe el juego [cite: 107, 109]
+    try:
+        with sr.Microphone() as source:
+            # Ajuste de ruido ultra rápido
+            recognizer.adjust_for_ambient_noise(source, duration=0.3)
+            # Solo espera 3 segundos. Si el paciente no empieza a hablar, sigue de largo.
+            audio = recognizer.listen(source, timeout=3, phrase_time_limit=5)
+        
+        # Intenta reconocer el texto
+        texto_dicho = recognizer.recognize_google(audio, language="es-ES")
+        similitud = SequenceMatcher(None, frase_objetivo.lower(), texto_dicho.lower()).ratio()
+        return round(similitud * 100, 1)
+    except Exception as e:
+        # Si hay error (silencio, internet, etc), devuelve 0 y NO se traba
+        print(f"Aviso: No se procesó voz ({e})")
+        return 0.0
 
 # ============================================================
 # MOTOR BASE PYGAME PARA LOS TESTS
@@ -198,32 +475,20 @@ def run_pygame_test(patient_id: str, test_key: str, test_name: str):
             t["active"] = True
 
     def draw_intro():
-        """Dibuja la pantalla inicial del test dentro de Pygame."""
-        screen.fill((15, 18, 25))
-
-        title = big_font.render(test_name, True, (240, 240, 240))
-        subtitle = font.render("Demo base del test - Área 1", True, (210, 210, 210))
-        info_1 = small_font.render(f"Paciente: {patient_id}", True, (255, 220, 120))
-        info_2 = small_font.render("Instrucción demo: hacé click sobre los círculos visibles.", True, (220, 220, 220))
-        info_3 = small_font.render("Presioná ESPACIO para comenzar.", True, (120, 255, 180))
-        info_4 = small_font.render("Presioná ESC para salir y volver al menú.", True, (255, 160, 160))
-
-        screen.blit(title, (60, 70))
-        screen.blit(subtitle, (60, 140))
-        screen.blit(info_1, (60, 220))
-        screen.blit(info_2, (60, 270))
-        screen.blit(info_3, (60, 315))
-        screen.blit(info_4, (60, 360))
-
-        # Caja visual estilo panel de instrucciones.
-        pygame.draw.rect(screen, (45, 50, 65), pygame.Rect(55, 200, 850, 210), border_radius=16)
-        pygame.draw.rect(screen, (220, 220, 220), pygame.Rect(55, 200, 850, 210), 2, border_radius=16)
-
-        # Reescribimos encima para asegurar que el panel quede atrás.
-        screen.blit(info_1, (80, 230))
-        screen.blit(info_2, (80, 275))
-        screen.blit(info_3, (80, 320))
-        screen.blit(info_4, (80, 365))
+        draw_openrehab_intro_screen(
+            screen,
+            width,
+            height,
+            test_name,
+            patient_id,
+            [
+                "Demo base del test.",
+                "Instrucción demo: hacé click sobre los círculos visibles.",
+            ],
+            start_text="ESPACIO para comenzar",
+            back_text="ESC para salir y volver al menú",
+            badge_text="Modo demostración",
+        )
 
     def draw_playing():
         """Dibuja la pantalla del juego mientras el test corre."""
@@ -250,21 +515,23 @@ def run_pygame_test(patient_id: str, test_key: str, test_name: str):
                 pygame.draw.circle(screen, (10, 10, 10), (target["x"], target["y"]), target["r"], 3)
 
     def draw_result():
-        """Dibuja la pantalla final con resultado y confirmación de guardado."""
-        screen.fill((18, 24, 32))
-
-        title = big_font.render("Resultado guardado", True, (220, 255, 220))
-        metric = font.render(f"Métrica principal: {final_metric} {final_unit}", True, (240, 240, 240))
-        errors = font.render(f"Errores registrados: {misses}", True, (240, 240, 240))
-        file_text = small_font.render(f"Archivo: {saved_path}", True, (180, 210, 255)) if saved_path else None
-        back = small_font.render("Presioná ENTER o ESC para volver al menú.", True, (255, 220, 120))
-
-        screen.blit(title, (60, 80))
-        screen.blit(metric, (60, 180))
-        screen.blit(errors, (60, 235))
-        if file_text:
-            screen.blit(file_text, (60, 300))
-        screen.blit(back, (60, 380))
+        summary_lines = [
+            f"Métrica principal: {final_metric} {final_unit}",
+            f"Errores registrados: {misses}",
+        ]
+        if saved_path:
+            summary_lines.append(f"Archivo guardado: {saved_path}")
+        draw_openrehab_result_screen(
+            screen,
+            width,
+            height,
+            test_name,
+            summary_lines,
+            action_text="ENTER para volver al menú",
+            secondary_text="ESC para salir",
+            title="Resultado guardado",
+            badge_text="Guardado exitoso",
+        )
 
     running = True
 
@@ -333,8 +600,7 @@ def run_pygame_test(patient_id: str, test_key: str, test_name: str):
                 saved_path = save_result_json(
                     patient_id=patient_id,
                     test_key=test_key,
-                    metric_value=final_metric,
-                    unit=final_unit,
+                    metrics_dict={"aciertos": final_metric, "errores": misses},
                     attempts=attempts,
                 )
                 state = "result"
@@ -358,376 +624,366 @@ def run_pygame_test(patient_id: str, test_key: str, test_name: str):
 # =================================================================
 # CREACIÓN DE CADA MODO DE JUEGO
 # =================================================================
-def run_exploracion_faro_test(patient_id: str, test_key: str, test_name: str):
-    
-    pygame.init()
 
+
+import pygame
+import random
+
+# --- CLASE AUXILIAR PARA BOTONES INTERACTIVOS ---
+class Button:
+    def __init__(self, x, y, w, h, text, color, hover_color):
+        self.rect = pygame.Rect(x, y, w, h)
+        self.text = text
+        self.color = color
+        self.hover_color = hover_color
+        self.is_hovered = False
+
+    def draw(self, screen, font):
+        color = self.hover_color if self.is_hovered else self.color
+        pygame.draw.rect(screen, color, self.rect, border_radius=10)
+        pygame.draw.rect(screen, (255, 255, 255), self.rect, 2, border_radius=10)
+        
+        text_surf = font.render(self.text, True, (255, 255, 255))
+        text_rect = text_surf.get_rect(center=self.rect.center)
+        screen.blit(text_surf, text_rect)
+
+    def check_hover(self, mouse_pos):
+        self.is_hovered = self.rect.collidepoint(mouse_pos)
+        return self.is_hovered
+
+def run_exploracion_faro_test(patient_id: str, test_key: str, test_name: str, difficulty: int):
+    # --- 1. CONFIGURACIÓN DE DIFICULTAD Y CONTRASTE ---
+    if difficulty == 1: # FÁCIL
+        duration_seconds, f_radius, t_radius, total_objects = 60, 180, 40, 10
+        color_bg, color_target_unfound = (0, 0, 0), (255, 255, 255) # Contraste Máximo
+    elif difficulty == 2: # MEDIO
+        duration_seconds, f_radius, t_radius, total_objects = 45, 120, 25, 16
+        color_bg, color_target_unfound = (20, 35, 55), (120, 140, 160)
+    else: # DIFÍCIL
+        duration_seconds, f_radius, t_radius, total_objects = 30, 85, 18, 22
+        color_bg, color_target_unfound = (45, 45, 45), (52, 52, 52) # Contraste Mínimo
+
+    pygame.init()
     width, height = 1200, 750
     screen = pygame.display.set_mode((width, height))
     pygame.display.set_caption(f"{APP_TITLE} - {test_name}")
-
     clock = pygame.time.Clock()
+    
+    # Fuentes con la estética de la App
+    font_hud = pygame.font.SysFont("arial", 26, bold=True)
+    font_giant = pygame.font.SysFont("arial", 90, bold=True)
+    font_button = pygame.font.SysFont("arial", 24, bold=True)
+    font_report = pygame.font.SysFont("arial", 22)
 
-    title_font = pygame.font.SysFont("arial", 34, bold=True)
-    font = pygame.font.SysFont("arial", 24)
-    small_font = pygame.font.SysFont("arial", 20)
-
+    # --- 2. VARIABLES DE ESTADO Y MÉTRICAS ---
     state = "intro"
-    duration_seconds = 30
+    show_report = False
     start_ticks = None
-
-    flashlight_radius = 120
-    total_objects = 12
-
-    objects = []
-
+    first_hit_ticks = None 
     found_count = 0
-    left_found = 0
-    right_found = 0
-    attempts = 1
-    saved_path = None
-    final_metric = 0
-    final_unit = "objetos_encontrados"
+    redundancy_accum = 0
+    last_side = None
+    final_metrics = {}
 
-    def generate_objects():
+    # Generación de estímulos (Balance para evaluar Neglect) [cite: 85]
+    objects = []
+    for i in range(total_objects):
+        side = "left" if i < total_objects // 2 else "right"
+        margin = t_radius + 30
+        x_min = margin if side == "left" else width // 2 + margin
+        x_max = width // 2 - margin if side == "left" else width - margin
+        objects.append({
+            "x": random.randint(x_min, x_max),
+            "y": random.randint(150, height - margin),
+            "r": t_radius, "found": False, "side": side
+        })
 
-        generated = []
-
-        left_count = total_objects // 2
-        right_count = total_objects - left_count
-
-        for _ in range(left_count):
-            generated.append({
-                "x": random.randint(80, width // 2 - 80),
-                "y": random.randint(140, height - 80),
-                "r": random.randint(18, 28),
-                "found": False,
-                "side": "left"
-            })
-
-        for _ in range(right_count):
-            generated.append({
-                "x": random.randint(width // 2 + 80, width - 80),
-                "y": random.randint(140, height - 80),
-                "r": random.randint(18, 28),
-                "found": False,
-                "side": "right"
-            })
-
-        return generated
-
-    objects = generate_objects()
-
-    def draw_intro():
-
-        screen.fill((12, 16, 24))
-
-        title = title_font.render(test_name, True, (240, 240, 240))
-        info1 = font.render(f"Paciente: {patient_id}", True, (255, 220, 120))
-        info2 = font.render("El cursor funciona como una linterna.", True, (220, 220, 220))
-        info3 = font.render("Explorá la pantalla y encontrá los objetos ocultos.", True, (220, 220, 220))
-        info4 = font.render("Hacé click cuando detectes un objeto.", True, (220, 220, 220))
-        info5 = font.render("Presioná ESPACIO para comenzar.", True, (120, 255, 180))
-        info6 = font.render("ESC para volver.", True, (255, 160, 160))
-
-        screen.blit(title, (60, 70))
-        screen.blit(info1, (60, 200))
-        screen.blit(info2, (60, 240))
-        screen.blit(info3, (60, 280))
-        screen.blit(info4, (60, 320))
-        screen.blit(info5, (60, 380))
-        screen.blit(info6, (60, 420))
-
-    def draw_playing():
-
-        screen.fill((18, 18, 18))
-
-        pygame.draw.rect(screen, (25, 25, 25), pygame.Rect(0, 0, width, 90))
-        pygame.draw.line(screen, (70, 70, 70), (width // 2, 90), (width // 2, height), 1)
-
-        elapsed = (pygame.time.get_ticks() - start_ticks) / 1000
-        remaining = max(0, duration_seconds - elapsed)
-
-        title = font.render(test_name, True, (255, 255, 255))
-        info = small_font.render(
-            f"Encontrados: {found_count}/{total_objects}   |   Tiempo restante: {remaining:0.1f}s",
-            True,
-            (255, 230, 120)
-        )
-
-        screen.blit(title, (20, 18))
-        screen.blit(info, (20, 55))
-
-        for obj in objects:
-            if obj["found"]:
-                pygame.draw.circle(screen, (80, 220, 120), (obj["x"], obj["y"]), obj["r"])
-
-        mouse_x, mouse_y = pygame.mouse.get_pos()
-
-        for obj in objects:
-            if obj["found"]:
-                continue
-
-            dx = mouse_x - obj["x"]
-            dy = mouse_y - obj["y"]
-            distance_sq = dx * dx + dy * dy
-
-            if distance_sq <= flashlight_radius * flashlight_radius:
-                pygame.draw.circle(screen, (240, 220, 90), (obj["x"], obj["y"]), obj["r"])
-
-        darkness = pygame.Surface((width, height), pygame.SRCALPHA)
-        darkness.fill((0, 0, 0, 210))
-
-        pygame.draw.circle(darkness, (0, 0, 0, 0), (mouse_x, mouse_y), flashlight_radius)
-
-        screen.blit(darkness, (0, 0))
-
-        pygame.draw.circle(screen, (255, 255, 180), (mouse_x, mouse_y), flashlight_radius, 2)
-
-    def draw_result():
-
-        screen.fill((16, 22, 30))
-
-        title = title_font.render("Resultado guardado", True, (220, 255, 220))
-        line1 = font.render(f"Métrica principal: {final_metric} {final_unit}", True, (240, 240, 240))
-        line2 = font.render("Presioná ENTER o ESC para volver.", True, (255, 220, 120))
-
-        screen.blit(title, (60, 100))
-        screen.blit(line1, (60, 200))
-        screen.blit(line2, (60, 300))
+    # --- 3. DEFINICIÓN DE BOTONES ---
+    btn_reporte = pygame.Rect(width // 2 - 220, height - 130, 210, 55)
+    btn_volver = pygame.Rect(width // 2 + 10, height - 130, 210, 55)
+    btn_cerrar = pygame.Rect(width // 2 - 100, 560, 200, 45)
 
     running = True
-
     while running:
+        screen.fill(color_bg)
+        mx, my = pygame.mouse.get_pos()
 
         for event in pygame.event.get():
-
-            if event.type == pygame.QUIT:
-                running = False
-
+            if event.type == pygame.QUIT: running = False
+            
             elif event.type == pygame.KEYDOWN:
-
-                if event.key == pygame.K_ESCAPE:
-                    running = False
-
-                elif state == "intro" and event.key == pygame.K_SPACE:
+                if event.key == pygame.K_ESCAPE: running = False
+                if state == "intro" and event.key == pygame.K_SPACE:
                     state = "playing"
                     start_ticks = pygame.time.get_ticks()
+                elif state == "result" and event.key == pygame.K_RETURN and not show_report:
+                    running = False
 
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                if state == "playing":
+                    for obj in objects:
+                        if not obj["found"]:
+                            dist = ((mx - obj["x"])**2 + (my - obj["y"])**2)**0.5
+                            if dist <= obj["r"]:
+                                obj["found"] = True
+                                found_count += 1
+                                if found_count == 1: first_hit_ticks = pygame.time.get_ticks()
+                                break
+                elif state == "result":
+                    if btn_reporte.collidepoint(mx, my) and not show_report:
+                        show_report = True
+                    elif btn_volver.collidepoint(mx, my) and not show_report:
+                        running = False
+                    elif btn_cerrar.collidepoint(mx, my) and show_report:
+                        show_report = False
+
+        # --- LÓGICA DE RENDERIZADO ---
+        if state == "intro":
+            draw_openrehab_intro_screen(screen, width, height, test_name, patient_id, 
+                ["Explorá toda la pantalla con tu linterna.", "Encontrá los objetos ocultos para mejorar tu visión."], 
+                "ESPACIO para comenzar", "ESC para salir", f"Nivel {difficulty}")
+
+        elif state == "playing":
+            elapsed = (pygame.time.get_ticks() - start_ticks) / 1000
+            remaining = max(0, duration_seconds - elapsed)
+
+            # Redundancia: cruces de mirada para evaluar memoria de trabajo [cite: 41, 42]
+            current_side = "L" if mx < width/2 else "R"
+            if last_side and current_side != last_side: redundancy_accum += 1
+            last_side = current_side
+
+            for obj in objects:
+                dist = ((mx - obj["x"])**2 + (my - obj["y"])**2)**0.5
+                if obj["found"]:
+                    pygame.draw.circle(screen, (114, 211, 154), (obj["x"], obj["y"]), obj["r"])
+                elif dist <= f_radius:
+                    pygame.draw.circle(screen, color_target_unfound, (obj["x"], obj["y"]), obj["r"])
+
+            # Capa de oscuridad estética
+            darkness = pygame.Surface((width, height), pygame.SRCALPHA)
+            darkness.fill((10, 37, 64, 252)) # Azul OpenRehab
+            pygame.draw.circle(darkness, (0, 0, 0, 0), (mx, my), f_radius)
+            screen.blit(darkness, (0, 0))
+            pygame.draw.circle(screen, (79, 195, 247), (mx, my), f_radius, 3) # Borde azul celeste
+
+            # HUD
+            screen.blit(font_hud.render(f"Tiempo: {int(remaining)}s", True, (255, 214, 102)), (width - 180, 35))
+            screen.blit(font_hud.render(f"Objetivos: {found_count}/{total_objects}", True, (244, 248, 252)), (40, 35))
+
+            if found_count == total_objects or remaining <= 0:
+                # Métricas diagnósticas [cite: 31, 37, 39, 41]
+                lat = (first_hit_ticks - start_ticks)/1000 if first_hit_ticks else elapsed
+                om_i = sum(1 for o in objects if not o["found"] and o["side"] == "left")
+                om_d = sum(1 for o in objects if not o["found"] and o["side"] == "right")
+                eficiencia = found_count / elapsed if elapsed > 0 else 0
+                porc = (found_count / total_objects) * 100
+
+                # Feedback Motivante
+                if porc >= 90:
+                    msg, rango = "¡Excelente rendimiento! Dominio visual total.", "EXCELENTE"
+                elif porc >= 60:
+                    msg, rango = "¡Muy bien! Estás ampliando tu campo visual con éxito.", "BIEN HECHO"
+                else:
+                    msg = "¡Buen esfuerzo! Intentá explorar más el lado izquierdo." if om_i > om_d else "¡Seguí practicando! Tu persistencia dará frutos."
+                    rango = "SIGUE ASÍ"
+
+                final_metrics = {"lat": round(lat, 2), "om_i": om_i, "om_d": om_d, "red": redundancy_accum // 2, "msg": msg, "rango": rango}
+                save_result_json(patient_id, test_key, final_metrics, 1)
+                state = "result"
+
+        elif state == "result":
+            screen.fill((10, 37, 64)) # Fondo azul marca
+            
+            if not show_report:
+                # Pantalla de Rango Gigante
+                txt_surf = font_giant.render(final_metrics["rango"], True, (114, 211, 154))
+                screen.blit(txt_surf, (width//2 - txt_surf.get_width()//2, 220))
+                
+                msg_surf = font_hud.render(final_metrics["msg"], True, (199, 217, 234))
+                screen.blit(msg_surf, (width//2 - msg_surf.get_width()//2, 340))
+
+                # Dibujar Botones
+                for b, txt, col in [(btn_reporte, "VER INFORME", (79, 195, 247)), (btn_volver, "VOLVER", (36, 72, 110))]:
+                    pygame.draw.rect(screen, col, b, border_radius=12)
+                    t_s = font_button.render(txt, True, (255, 255, 255))
+                    screen.blit(t_s, t_s.get_rect(center=b.center))
+            else:
+                # Pop-up de Informe Médico Detallado [cite: 36]
+                pygame.draw.rect(screen, (244, 248, 252), (width//2 - 300, 150, 600, 480), border_radius=20)
+                pygame.draw.rect(screen, (43, 92, 136), (width//2 - 300, 150, 600, 480), 3, border_radius=20)
+                
+                t_rep = font_button.render("INFORME CLÍNICO DETALLADO", True, (10, 37, 64))
+                screen.blit(t_rep, (width//2 - t_rep.get_width()//2, 180))
+                
+                info_lines = [
+                    f"Latencia al primer hallazgo: {final_metrics['lat']}s",
+                    f"Omisiones Lado Izquierdo: {final_metrics['om_i']}",
+                    f"Omisiones Lado Derecho: {final_metrics['om_d']}",
+                    f"Redundancia (Cruces de línea media): {final_metrics['red']}",
+                    f"Efectividad de rastreo: {int((found_count/total_objects)*100)}%"
+                ]
+                for i, line in enumerate(info_lines):
+                    l_s = font_report.render(line, True, (36, 72, 110))
+                    screen.blit(l_s, (width//2 - 240, 260 + (i * 45)))
+
+                pygame.draw.rect(screen, (180, 50, 50), btn_cerrar, border_radius=10)
+                c_s = font_button.render("CERRAR", True, (255, 255, 255))
+                screen.blit(c_s, c_s.get_rect(center=btn_cerrar.center))
+
+        pygame.display.flip()
+        clock.tick(60)
+    pygame.quit()
+    
+
+def run_anclaje_visual_test(patient_id: str, test_key: str, test_name: str, difficulty: int):
+    # --- CONFIGURACIÓN DE NIVELES Y FRASES OPTIMIZADAS ---
+    if difficulty == 1: # FÁCIL
+        ancla_w, blink_speed, area_tolerancia, mov_x, mov_y = 65, 450, 45, 0, 0
+        frases = [
+            "El sol sale por el este.", 
+            "El gato toma leche fresca.", 
+            "La casa es de color azul.",
+            "Hoy es un día despejado."
+        ] # [cite: 54, 57]
+    elif difficulty == 2: # MEDIO
+        ancla_w, blink_speed, area_tolerancia, mov_x, mov_y = 35, 750, 25, 40, 80
+        frases = [
+            "La corteza cerebral procesa la información sensorial compleja.",
+            "El hemisferio derecho coordina la orientación espacial del cuerpo.",
+            "La plasticidad neuronal permite la recuperación de funciones perdidas.",
+            "La atención sostenida es vital para completar tareas cotidianas."
+        ] # [cite: 60, 63]
+    else: # DIFÍCIL
+        ancla_w, blink_speed, area_tolerancia, mov_x, mov_y = 15, 0, 8, 100, 220
+        frases = [
+            "La heminegligencia espacial resulta de lesiones en el lóbulo parietal posterior.",
+            "El sistema de activación reticular influye en el estado de alerta del paciente.",
+            "Los movimientos sacádicos permiten desplazar el foco atencional rápidamente.",
+            "La decodificación fonológica integra áreas visuales y auditivas del lenguaje."
+        ] # [cite: 66, 69]
+
+    pygame.init()
+    width, height = 1200, 750
+    screen = pygame.display.set_mode((width, height))
+    clock = pygame.time.Clock()
+
+    # Fuentes y Botones
+    font_text = pygame.font.SysFont("arial", 30)
+    font_hud = pygame.font.SysFont("arial", 26, bold=True)
+    font_giant = pygame.font.SysFont("arial", 90, bold=True)
+    font_button = pygame.font.SysFont("arial", 24, bold=True)
+    font_report = pygame.font.SysFont("arial", 22)
+
+    state = "intro"
+    show_report = False
+    current_idx = 0
+    # Posición inicial del ancla
+    ancla_x, ancla_y = 15, 200 
+    
+    latencias, precisiones, tiempos_lectura, validez_vocal = [], [], [], []
+    final_metrics = {}
+
+    btn_reporte = pygame.Rect(width // 2 - 220, height - 130, 210, 55)
+    btn_volver = pygame.Rect(width // 2 + 10, height - 130, 210, 55)
+    btn_cerrar = pygame.Rect(width // 2 - 100, 560, 200, 45)
+
+    running = True
+    while running:
+        screen.fill((10, 37, 64)) 
+        mx, my = pygame.mouse.get_pos()
+        t_now = pygame.time.get_ticks()
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT: running = False
+            if event.type == pygame.KEYDOWN:
+                if state == "intro" and event.key == pygame.K_SPACE:
+                    state = "waiting_anchor"
+                    start_ancla_time = t_now
                 elif state == "result" and event.key == pygame.K_RETURN:
                     running = False
 
-            elif event.type == pygame.MOUSEBUTTONDOWN and state == "playing":
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                if state == "waiting_anchor":
+                    ancla_rect = pygame.Rect(ancla_x, ancla_y, ancla_w, 350)
+                    colision = ancla_rect.inflate(area_tolerancia, area_tolerancia)
+                    if colision.collidepoint(event.pos):
+                        latencias.append((t_now - start_ancla_time) / 1000)
+                        dist = ((event.pos[0]-ancla_rect.centerx)**2 + (event.pos[1]-ancla_rect.centery)**2)**0.5
+                        precisiones.append(dist)
+                        state = "reading"
+                        start_lectura_time = t_now
+                elif state == "result":
+                    if btn_reporte.collidepoint(mx, my): show_report = True
+                    elif btn_volver.collidepoint(mx, my): running = False
+                    elif btn_cerrar.collidepoint(mx, my): show_report = False
 
-                mouse_x, mouse_y = event.pos
-
-                for obj in objects:
-
-                    if obj["found"]:
-                        continue
-
-                    dx = mouse_x - obj["x"]
-                    dy = mouse_y - obj["y"]
-                    inside = (dx * dx + dy * dy) <= (obj["r"] * obj["r"])
-
-                    if inside:
-                        obj["found"] = True
-                        found_count += 1
-
-                        if obj["side"] == "left":
-                            left_found += 1
-                        else:
-                            right_found += 1
-                        break
-
-        if state == "playing":
-
-            elapsed = (pygame.time.get_ticks() - start_ticks) / 1000
-
-            if found_count == total_objects or elapsed >= duration_seconds:
-
-                final_metric = found_count
-
-                saved_path = save_result_json(
-                    patient_id,
-                    test_key,
-                    final_metric,
-                    final_unit,
-                    attempts
-                )
-
-                state = "result"
-
+        # --- RENDERIZADO DE ESTADOS ---
         if state == "intro":
-            draw_intro()
+            draw_openrehab_intro_screen(screen, width, height, test_name, patient_id, 
+                ["Escanea el borde izquierdo para habilitar la lectura.", "Lee las frases técnicas en voz alta."], 
+                "ESPACIO para comenzar", "ESC para salir", f"Nivel {difficulty}")
 
-        elif state == "playing":
-            draw_playing()
+        elif state == "waiting_anchor":
+            # Ancla dinámica en X e Y (siempre sector izquierdo)
+            if blink_speed == 0 or (t_now // blink_speed) % 2 == 0:
+                pygame.draw.rect(screen, (220, 20, 20), (ancla_x, ancla_y, ancla_w, 350), border_radius=8)
+
+        elif state == "reading":
+            screen.fill((244, 248, 252))
+            pygame.draw.rect(screen, (220, 20, 20), (ancla_x, ancla_y, ancla_w, 350)) 
+            txt_surf = font_text.render(frases[current_idx], True, (10, 37, 64))
+            screen.blit(txt_surf, (200, height//2))
+            screen.blit(font_hud.render("SISTEMA DE AUDIO ACTIVO - Lee ahora", True, (200, 30, 30)), (400, 600))
+            pygame.display.flip()
+            
+            validez = procesar_voz(frases[current_idx])
+            validez_vocal.append(validez)
+            tiempos_lectura.append((pygame.time.get_ticks() - start_lectura_time) / 1000)
+            
+            current_idx += 1
+            if current_idx >= len(frases):
+                # Cálculos finales
+                avg_lat = round(sum(latencias)/len(latencias), 2)
+                avg_prec = round(sum(precisiones)/len(precisiones), 1)
+                avg_val = round(sum(validez_vocal)/len(validez_vocal), 1)
+                avg_lect = round(sum(tiempos_lectura)/len(tiempos_lectura), 1)
+                
+                rango = "EXCELENTE!" if avg_val > 80 else ("BIEN HECHO" if avg_val > 60 else "PUEDES SEGUIR MEJORANDO")
+                final_metrics = {"lat": avg_lat, "prec": avg_prec, "val": avg_val, "lect": avg_lect, "rango": rango}
+                save_result_json(patient_id, test_key, final_metrics, 1)
+                state = "result"
+            else:
+                # Movimiento horizontal y vertical restringido a la izquierda [cite: 73]
+                ancla_x = random.randint(10, 10 + mov_x)
+                ancla_y = random.randint(50, 50 + mov_y)
+                state = "waiting_anchor"
+                start_ancla_time = pygame.time.get_ticks()
 
         elif state == "result":
-            draw_result()
+            if not show_report:
+                txt_surf = font_giant.render(final_metrics["rango"], True, (114, 211, 154))
+                screen.blit(txt_surf, (width//2 - txt_surf.get_width()//2, 220))
+                pygame.draw.rect(screen, (79, 195, 247), btn_reporte, border_radius=12)
+                screen.blit(font_button.render("VER INFORME", True, (255, 255, 255)), font_button.render("VER INFORME", True, (255, 255, 255)).get_rect(center=btn_reporte.center))
+                pygame.draw.rect(screen, (36, 72, 110), btn_volver, border_radius=12)
+                screen.blit(font_button.render("VOLVER", True, (255, 255, 255)), font_button.render("VOLVER", True, (255, 255, 255)).get_rect(center=btn_volver.center))
+            else:
+                pygame.draw.rect(screen, (244, 248, 252), (width//2 - 300, 150, 600, 480), border_radius=20)
+                info = [
+                    f"Latencia activación: {final_metrics['lat']}s",
+                    f"Precisión motora: {final_metrics['prec']} px",
+                    f"Tiempo lectura: {final_metrics['lect']}s",
+                    f"Validez de voz: {final_metrics['val']}%"
+                ]
+                for i, line in enumerate(info):
+                    screen.blit(font_report.render(line, True, (36, 72, 110)), (width//2 - 240, 270 + (i * 50)))
+                pygame.draw.rect(screen, (180, 50, 50), btn_cerrar, border_radius=10)
+                screen.blit(font_button.render("CERRAR", True, (255, 255, 255)), font_button.render("CERRAR", True, (255, 255, 255)).get_rect(center=btn_cerrar.center))
 
         pygame.display.flip()
         clock.tick(60)
-
     pygame.quit()
-
-def run_anclaje_visual_test(patient_id: str, test_key: str, test_name: str):
     
-    pygame.init()
-
-    width, height = 1200, 750
-    screen = pygame.display.set_mode((width, height))
-    pygame.display.set_caption(f"{APP_TITLE} - {test_name}")
-
-    clock = pygame.time.Clock()
-
-    font = pygame.font.SysFont("arial", 28)
-    title_font = pygame.font.SysFont("arial", 36, bold=True)
-
-    state = "intro"
-
-    trials = 6
-    current_trial = 0
-
-    bar_clicked = False
-
-    start_ticks = None
-
-    attempts = 1
-    saved_path = None
-    final_metric = 0
-    final_unit = "anclajes_correctos"
-
-    sentences = [
-        "El perro corre en el parque.",
-        "La casa tiene una puerta azul.",
-        "Hoy el clima está muy agradable.",
-        "El tren llega a la estación.",
-        "Los niños juegan en el patio.",
-        "La doctora revisa al paciente."
-    ]
-
-    bar_flash_timer = 0
-
-    def draw_intro():
-
-        screen.fill((20, 24, 32))
-
-        title = title_font.render(test_name, True, (240,240,240))
-        info1 = font.render("Tocá la barra roja del lado izquierdo para habilitar el texto.", True, (220,220,220))
-        info2 = font.render("Esto entrena la atención al margen izquierdo.", True, (220,220,220))
-        info3 = font.render("Presioná ESPACIO para comenzar.", True, (120,255,180))
-
-        screen.blit(title,(60,80))
-        screen.blit(info1,(60,200))
-        screen.blit(info2,(60,250))
-        screen.blit(info3,(60,350))
-
-    def draw_playing():
-
-        nonlocal bar_flash_timer
-
-        screen.fill((240,240,240))
-
-        pygame.draw.rect(screen,(230,230,230),(0,0,width,80))
-
-        title = font.render(f"Intento {current_trial+1} / {trials}",True,(20,20,20))
-        screen.blit(title,(20,25))
-
-        bar_flash_timer += 1
-
-        bar_color = (255,60,60)
-
-        if (bar_flash_timer//30)%2 == 0:
-            pygame.draw.rect(screen,bar_color,(20,150,30,400))
-
-        if bar_clicked:
-
-            text_surface = font.render(sentences[current_trial],True,(0,0,0))
-            screen.blit(text_surface,(200,300))
-
-            pygame.draw.rect(screen,(80,160,255),(900,500,180,60))
-            next_text = font.render("Siguiente",True,(255,255,255))
-            screen.blit(next_text,(930,515))
-
-    def draw_result():
-
-        screen.fill((20,30,40))
-
-        title = title_font.render("Resultado guardado",True,(220,255,220))
-        line1 = font.render(f"Métrica principal: {final_metric}",True,(240,240,240))
-        line2 = font.render("ENTER o ESC para volver",True,(255,220,120))
-
-        screen.blit(title,(80,120))
-        screen.blit(line1,(80,240))
-        screen.blit(line2,(80,320))
-
-    running = True
-
-    while running:
-
-        for event in pygame.event.get():
-
-            if event.type == pygame.QUIT:
-                running=False
-
-            elif event.type == pygame.KEYDOWN:
-
-                if event.key == pygame.K_ESCAPE:
-                    running=False
-
-                elif state=="intro" and event.key==pygame.K_SPACE:
-                    state="playing"
-                    start_ticks = pygame.time.get_ticks()
-
-                elif state=="result" and event.key==pygame.K_RETURN:
-                    running=False
-
-            elif event.type == pygame.MOUSEBUTTONDOWN and state=="playing":
-
-                mouse_x, mouse_y = event.pos
-
-                if not bar_clicked:
-
-                    if 20 <= mouse_x <= 50 and 150 <= mouse_y <= 550:
-                        bar_clicked=True
-
-                else:
-
-                    if 900 <= mouse_x <= 1080 and 500 <= mouse_y <= 560:
-
-                        current_trial +=1
-                        bar_clicked=False
-
-                        if current_trial >= trials:
-
-                            final_metric = trials
-
-                            saved_path = save_result_json(
-                                patient_id,
-                                test_key,
-                                final_metric,
-                                final_unit,
-                                attempts
-                            )
-
-                            state="result"
-
-        if state=="intro":
-            draw_intro()
-
-        elif state=="playing":
-            draw_playing()
-
-        elif state=="result":
-            draw_result()
-
-        pygame.display.flip()
-        clock.tick(60)
-
-    pygame.quit()
-
 def run_complejidad_gradual_test(patient_id: str, test_key: str, test_name: str):
     
     pygame.init()
@@ -790,17 +1046,20 @@ def run_complejidad_gradual_test(patient_id: str, test_key: str, test_name: str)
     generate_level(current_level)
 
     def draw_intro():
-        screen.fill((18, 24, 32))
-
-        t1 = title_font.render(test_name, True, (240, 240, 240))
-        t2 = font.render("Encontrá la figura objetivo entre distractores.", True, (220, 220, 220))
-        t3 = font.render("La dificultad aumenta en cada nivel.", True, (220, 220, 220))
-        t4 = font.render("Presioná ESPACIO para comenzar.", True, (120, 255, 180))
-
-        screen.blit(t1, (60, 70))
-        screen.blit(t2, (60, 200))
-        screen.blit(t3, (60, 245))
-        screen.blit(t4, (60, 330))
+        draw_openrehab_intro_screen(
+            screen,
+            width,
+            height,
+            test_name,
+            patient_id,
+            [
+                "Encontrá la figura objetivo entre distractores.",
+                "La dificultad aumenta en cada nivel.",
+            ],
+            start_text="ESPACIO para comenzar",
+            back_text="ESC para volver al menú",
+            badge_text="Área visual",
+        )
 
     def draw_playing():
         screen.fill((245, 245, 245))
@@ -834,15 +1093,17 @@ def run_complejidad_gradual_test(patient_id: str, test_key: str, test_name: str)
             screen.blit(txt, (rect.x + 18, rect.y - 5))
 
     def draw_result():
-        screen.fill((18, 24, 32))
-
-        t1 = title_font.render("Resultado guardado", True, (220, 255, 220))
-        t2 = font.render(f"Métrica principal: {final_metric} {final_unit}", True, (240, 240, 240))
-        t3 = font.render("Presioná ENTER o ESC para volver.", True, (255, 220, 120))
-
-        screen.blit(t1, (60, 100))
-        screen.blit(t2, (60, 200))
-        screen.blit(t3, (60, 280))
+        draw_openrehab_result_screen(
+            screen,
+            width,
+            height,
+            test_name,
+            [f"Métrica principal: {final_metric} {final_unit}"],
+            action_text="ENTER para volver",
+            secondary_text="ESC para salir",
+            title="Resultado guardado",
+            badge_text="Resumen final",
+        )
 
     running = True
 
@@ -875,8 +1136,7 @@ def run_complejidad_gradual_test(patient_id: str, test_key: str, test_name: str)
                         saved_path = save_result_json(
                             patient_id,
                             test_key,
-                            final_metric,
-                            final_unit,
+                            {"niveles_superados": final_metric},
                             attempts
                         )
                         state = "result"
@@ -957,15 +1217,17 @@ def run_cancelacion_estimulos_test(patient_id: str, test_key: str, test_name: st
     generate_grid()
 
     def draw_intro():
-        screen.fill((18, 24, 32))
-
-        t1 = title_font.render(test_name, True, (240, 240, 240))
-        t2 = font.render("Hacé click en todas las X de la matriz.", True, (220, 220, 220))
-        t3 = font.render("Presioná ESPACIO para comenzar.", True, (120, 255, 180))
-
-        screen.blit(t1, (60, 70))
-        screen.blit(t2, (60, 210))
-        screen.blit(t3, (60, 290))
+        draw_openrehab_intro_screen(
+            screen,
+            width,
+            height,
+            test_name,
+            patient_id,
+            ["Hacé click en todas las X de la matriz."],
+            start_text="ESPACIO para comenzar",
+            back_text="ESC para volver al menú",
+            badge_text="Atención selectiva",
+        )
 
     def draw_playing():
         screen.fill((245, 245, 245))
@@ -993,15 +1255,17 @@ def run_cancelacion_estimulos_test(patient_id: str, test_key: str, test_name: st
                 screen.blit(txt, (cell["rect"].x + 20, cell["rect"].y + 10))
 
     def draw_result():
-        screen.fill((18, 24, 32))
-
-        t1 = title_font.render("Resultado guardado", True, (220, 255, 220))
-        t2 = font.render(f"Métrica principal: {final_metric} {final_unit}", True, (240, 240, 240))
-        t3 = font.render("Presioná ENTER o ESC para volver.", True, (255, 220, 120))
-
-        screen.blit(t1, (60, 100))
-        screen.blit(t2, (60, 200))
-        screen.blit(t3, (60, 280))
+        draw_openrehab_result_screen(
+            screen,
+            width,
+            height,
+            test_name,
+            [f"Métrica principal: {final_metric} {final_unit}"],
+            action_text="ENTER para volver",
+            secondary_text="ESC para salir",
+            title="Resultado guardado",
+            badge_text="Resumen final",
+        )
 
     running = True
 
@@ -1039,8 +1303,7 @@ def run_cancelacion_estimulos_test(patient_id: str, test_key: str, test_name: st
                 save_result_json(
                     patient_id,
                     test_key,
-                    final_metric,
-                    final_unit,
+                    {final_unit: final_metric},
                     attempts
                 )
                 state = "result"
@@ -1057,35 +1320,45 @@ def run_cancelacion_estimulos_test(patient_id: str, test_key: str, test_name: st
 
     pygame.quit()
 
-def run_figura_fondo_test(patient_id: str, test_key: str, test_name: str):
-    
+
+
+def run_figura_fondo_test(patient_id: str, test_key: str, test_name: str, difficulty: int):
     pygame.init()
 
     width, height = 1200, 750
     screen = pygame.display.set_mode((width, height))
     pygame.display.set_caption(f"{APP_TITLE} - {test_name}")
-
     clock = pygame.time.Clock()
 
-    title_font = pygame.font.SysFont("arial", 34, bold=True)
     font = pygame.font.SysFont("arial", 24)
+    font_hud = pygame.font.SysFont("arial", 26, bold=True)
+    font_giant = pygame.font.SysFont("arial", 80, bold=True)
+    font_button = pygame.font.SysFont("arial", 24, bold=True)
+    font_report = pygame.font.SysFont("arial", 22)
 
     state = "intro"
+    show_report = False
     attempts = 1
-    final_metric = 0
-    final_unit = "figuras_detectadas"
 
     rounds = 5
     current_round = 0
+    correct_count = 0
+    incorrect_count = 0
+    start_ticks = None
+    total_time = 0.0
+    avg_time = 0.0
+    final_metrics = {}
 
     target_rect = pygame.Rect(0, 0, 0, 0)
     buttons = []
+    target_shape = "rect"
+
+    btn_reporte = pygame.Rect(width // 2 - 220, height - 130, 210, 55)
+    btn_volver = pygame.Rect(width // 2 + 10, height - 130, 210, 55)
+    btn_cerrar = pygame.Rect(width // 2 - 100, 560, 200, 45)
 
     def generate_round():
-        """
-        Genera una figura de bajo contraste y opciones de respuesta.
-        """
-        nonlocal target_rect, buttons
+        nonlocal target_rect, buttons, target_shape
 
         x = random.randint(220, 800)
         y = random.randint(180, 430)
@@ -1093,92 +1366,206 @@ def run_figura_fondo_test(patient_id: str, test_key: str, test_name: str):
         h = random.randint(80, 150)
 
         target_rect = pygame.Rect(x, y, w, h)
-
         buttons = [
             {"label": "Rectángulo", "rect": pygame.Rect(180, 580, 200, 60)},
             {"label": "Círculo", "rect": pygame.Rect(470, 580, 200, 60)},
             {"label": "Triángulo", "rect": pygame.Rect(760, 580, 200, 60)},
         ]
+        target_shape = random.choice(["rect", "circle", "triangle"])
 
     generate_round()
 
+    def get_feedback(correctas, total):
+        if correctas == total:
+            return "EXCELENTE", "¡Excelente rendimiento! Identificaste correctamente todas las figuras."
+        elif correctas == total - 1:
+            return "MUY BIEN", "Muy buen trabajo. Solo hubo una identificación incorrecta."
+        elif correctas == 3:
+            return "BIEN HECHO", "Buen desempeño. Lograste reconocer más de la mitad de las figuras."
+        elif correctas == 2:
+            return "SIGUE ASÍ", "Vas avanzando. Conviene seguir practicando la discriminación figura-fondo."
+        elif correctas == 1:
+            return "A PRACTICAR", "Se identificó una sola figura correctamente. Hace falta más práctica."
+        else:
+            return "A ENTRENAR", "No se identificaron figuras correctamente. Es recomendable reforzar este ejercicio."
+
     def draw_intro():
-        screen.fill((20, 24, 32))
-
-        t1 = title_font.render(test_name, True, (240, 240, 240))
-        t2 = font.render("Identificá la figura con bajo contraste respecto al fondo.", True, (220, 220, 220))
-        t3 = font.render("Presioná ESPACIO para comenzar.", True, (120, 255, 180))
-
-        screen.blit(t1, (60, 70))
-        screen.blit(t2, (60, 210))
-        screen.blit(t3, (60, 290))
+        draw_openrehab_intro_screen(
+            screen,
+            width,
+            height,
+            test_name,
+            patient_id,
+            ["Identificá la figura con bajo contraste respecto al fondo."],
+            start_text="ESPACIO para comenzar",
+            back_text="ESC para volver al menú",
+            badge_text="Percepción visual",
+        )
 
     def draw_playing():
-        screen.fill((205, 205, 205))
+        bg = 205
 
-        pygame.draw.rect(screen, (190, 190, 190), target_rect, border_radius=14)
-        pygame.draw.rect(screen, (198, 198, 198), target_rect.inflate(-8, -8), border_radius=14)
+        if difficulty == 1:
+            outer_delta = -60
+            inner_delta = -30
+        elif difficulty == 2:
+            outer_delta = -30
+            inner_delta = -15
+        else:
+            outer_delta = -12
+            inner_delta = -6
 
+        screen.fill((bg, bg, bg))
+
+        outer_color = tuple(max(0, min(255, bg + d)) for d in (outer_delta, outer_delta, outer_delta))
+        inner_color = tuple(max(0, min(255, bg + d)) for d in (inner_delta, inner_delta, inner_delta))
+
+        if target_shape == "rect":
+            pygame.draw.rect(screen, outer_color, target_rect, border_radius=14)
+        elif target_shape == "circle":
+            pygame.draw.ellipse(screen, outer_color, target_rect)
+        elif target_shape == "triangle":
+            points = [
+                (target_rect.centerx, target_rect.top),
+                (target_rect.left, target_rect.bottom),
+                (target_rect.right, target_rect.bottom)
+            ]
+            pygame.draw.polygon(screen, outer_color, points)
+
+        inner_rect = target_rect.inflate(-8, -8)
+        if target_shape == "rect":
+            pygame.draw.rect(screen, inner_color, inner_rect, border_radius=14)
+        elif target_shape == "circle":
+            pygame.draw.ellipse(screen, inner_color, inner_rect)
+        elif target_shape == "triangle":
+            points = [
+                (inner_rect.centerx, inner_rect.top),
+                (inner_rect.left, inner_rect.bottom),
+                (inner_rect.right, inner_rect.bottom)
+            ]
+            pygame.draw.polygon(screen, inner_color, points)
+
+        elapsed = 0 if start_ticks is None else (pygame.time.get_ticks() - start_ticks) / 1000
         header = font.render(f"Ronda {current_round + 1}/{rounds}", True, (30, 30, 30))
-        screen.blit(header, (40, 30))
+        stats = font.render(f"Aciertos: {correct_count} | Errores: {incorrect_count} | Tiempo: {elapsed:0.1f}s", True, (30, 30, 30))
+        screen.blit(header, (40, 26))
+        screen.blit(stats, (40, 62))
 
         for button in buttons:
             pygame.draw.rect(screen, (80, 160, 255), button["rect"], border_radius=12)
             txt = font.render(button["label"], True, (255, 255, 255))
-            screen.blit(txt, (button["rect"].x + 35, button["rect"].y + 16))
+            txt_rect = txt.get_rect(center=button["rect"].center)
+            screen.blit(txt, txt_rect)
 
     def draw_result():
-        screen.fill((18, 24, 32))
+        screen.fill((10, 37, 64))
 
-        t1 = title_font.render("Resultado guardado", True, (220, 255, 220))
-        t2 = font.render(f"Métrica principal: {final_metric} {final_unit}", True, (240, 240, 240))
-        t3 = font.render("Presioná ENTER o ESC para volver.", True, (255, 220, 120))
+        if not show_report:
+            txt_surf = font_giant.render(final_metrics["rango"], True, (114, 211, 154))
+            screen.blit(txt_surf, (width // 2 - txt_surf.get_width() // 2, 220))
 
-        screen.blit(t1, (60, 100))
-        screen.blit(t2, (60, 200))
-        screen.blit(t3, (60, 280))
+            msg_surf = font_hud.render(final_metrics["msg"], True, (199, 217, 234))
+            screen.blit(msg_surf, (width // 2 - msg_surf.get_width() // 2, 340))
+
+            for rect, label, color in [
+                (btn_reporte, "VER INFORME", (79, 195, 247)),
+                (btn_volver, "VOLVER", (36, 72, 110))
+            ]:
+                pygame.draw.rect(screen, color, rect, border_radius=12)
+                txt = font_button.render(label, True, (255, 255, 255))
+                screen.blit(txt, txt.get_rect(center=rect.center))
+        else:
+            popup_rect = pygame.Rect(width // 2 - 300, 150, 600, 480)
+            pygame.draw.rect(screen, (244, 248, 252), popup_rect, border_radius=20)
+            pygame.draw.rect(screen, (43, 92, 136), popup_rect, 3, border_radius=20)
+
+            title_surf = font_button.render("INFORME CLÍNICO DETALLADO", True, (10, 37, 64))
+            screen.blit(title_surf, (width // 2 - title_surf.get_width() // 2, 180))
+
+            info_lines = [
+                f"Figuras correctas: {final_metrics['correctas']}/{final_metrics['total']}",
+                f"Figuras incorrectas: {final_metrics['incorrectas']}",
+                f"Tiempo total: {final_metrics['tiempo']}s",
+                f"Tiempo promedio por figura: {final_metrics['tiempo_promedio']}s",
+                f"Porcentaje de acierto: {final_metrics['porcentaje']}%"
+            ]
+            for i, line in enumerate(info_lines):
+                line_surf = font_report.render(line, True, (36, 72, 110))
+                screen.blit(line_surf, (width // 2 - 230, 250 + (i * 50)))
+
+            pygame.draw.rect(screen, (180, 50, 50), btn_cerrar, border_radius=10)
+            close_surf = font_button.render("CERRAR", True, (255, 255, 255))
+            screen.blit(close_surf, close_surf.get_rect(center=btn_cerrar.center))
 
     running = True
-
     while running:
-        for event in pygame.event.get():
+        mx, my = pygame.mouse.get_pos()
 
+        for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
 
             elif event.type == pygame.KEYDOWN:
-
                 if event.key == pygame.K_ESCAPE:
                     running = False
-
                 elif state == "intro" and event.key == pygame.K_SPACE:
                     state = "playing"
-
-                elif state == "result" and event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                    show_report = False
+                    current_round = 0
+                    correct_count = 0
+                    incorrect_count = 0
+                    total_time = 0.0
+                    avg_time = 0.0
+                    start_ticks = pygame.time.get_ticks()
+                    generate_round()
+                elif state == "result" and event.key == pygame.K_RETURN and not show_report:
                     running = False
 
-            elif event.type == pygame.MOUSEBUTTONDOWN and state == "playing":
-
-                mouse_x, mouse_y = event.pos
-
-                for button in buttons:
-                    if button["rect"].collidepoint(mouse_x, mouse_y):
-                        if button["label"] == "Rectángulo":
-                            final_metric += 1
-
-                        current_round += 1
-
-                        if current_round >= rounds:
-                            save_result_json(
-                                patient_id,
-                                test_key,
-                                final_metric,
-                                final_unit,
-                                attempts
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                if state == "playing":
+                    for button in buttons:
+                        if button["rect"].collidepoint(mx, my):
+                            is_correct = (
+                                (button["label"] == "Rectángulo" and target_shape == "rect") or
+                                (button["label"] == "Círculo" and target_shape == "circle") or
+                                (button["label"] == "Triángulo" and target_shape == "triangle")
                             )
-                            state = "result"
-                        else:
-                            generate_round()
+
+                            if is_correct:
+                                correct_count += 1
+                            else:
+                                incorrect_count += 1
+
+                            current_round += 1
+
+                            if current_round >= rounds:
+                                total_time = (pygame.time.get_ticks() - start_ticks) / 1000 if start_ticks else 0.0
+                                avg_time = total_time / rounds if rounds else 0.0
+                                porcentaje = round((correct_count / rounds) * 100) if rounds else 0
+                                rango, msg = get_feedback(correct_count, rounds)
+                                final_metrics = {
+                                    "correctas": correct_count,
+                                    "incorrectas": incorrect_count,
+                                    "total": rounds,
+                                    "tiempo": round(total_time, 2),
+                                    "tiempo_promedio": round(avg_time, 2),
+                                    "porcentaje": porcentaje,
+                                    "rango": rango,
+                                    "msg": msg
+                                }
+                                save_result_json(patient_id, test_key, final_metrics, attempts)
+                                state = "result"
+                            else:
+                                generate_round()
+                            break
+
+                elif state == "result":
+                    if btn_reporte.collidepoint(mx, my) and not show_report:
+                        show_report = True
+                    elif btn_volver.collidepoint(mx, my) and not show_report:
+                        running = False
+                    elif btn_cerrar.collidepoint(mx, my) and show_report:
+                        show_report = False
 
         if state == "intro":
             draw_intro()
@@ -1192,8 +1579,9 @@ def run_figura_fondo_test(patient_id: str, test_key: str, test_name: str):
 
     pygame.quit()
 
-def run_acinetopsia_test(patient_id: str, test_key: str, test_name: str):
-    
+
+
+def run_acinetopsia_test(patient_id: str, test_key: str, test_name: str, difficulty: int):
     pygame.init()
 
     width, height = 1200, 750
@@ -1202,70 +1590,177 @@ def run_acinetopsia_test(patient_id: str, test_key: str, test_name: str):
 
     clock = pygame.time.Clock()
 
-    title_font = pygame.font.SysFont("arial", 34, bold=True)
     font = pygame.font.SysFont("arial", 24)
+    font_hud = pygame.font.SysFont("arial", 26, bold=True)
+    font_giant = pygame.font.SysFont("arial", 80, bold=True)
+    font_button = pygame.font.SysFont("arial", 24, bold=True)
+    font_report = pygame.font.SysFont("arial", 22)
 
     state = "intro"
+    show_report = False
     attempts = 1
-    final_metric = 0
-    final_unit = "objetos_capturados"
 
+    total_targets = 8
+    found_count = 0
+    total_clicks = 0
+    misclicks = 0
     duration_seconds = 25
     start_ticks = None
+    total_time = 0.0
+    avg_time = 0.0
+    final_metrics = {}
 
     targets = []
 
-    for _ in range(8):
-        targets.append({
-            "x": random.randint(50, 300),
-            "y": random.randint(140, height - 70),
-            "r": random.randint(20, 30),
-            "speed": random.randint(3, 7),
-            "active": True
-        })
+    def create_targets():
+        nonlocal targets
+        targets = []
+        for _ in range(total_targets):
+            targets.append({
+                "x": random.randint(50, 300),
+                "y": random.randint(140, height - 70),
+                "r": random.randint(20, 30),
+                "speed": random.randint(3, 7),
+                "active": True
+            })
+
+    create_targets()
+
+    btn_reporte = pygame.Rect(width // 2 - 220, height - 130, 210, 55)
+    btn_volver = pygame.Rect(width // 2 + 10, height - 130, 210, 55)
+    btn_cerrar = pygame.Rect(width // 2 - 100, 560, 200, 45)
+
+    def get_feedback(encontrados, total):
+        if encontrados == total:
+            return "EXCELENTE", "¡Excelente rendimiento! Marcaste correctamente todos los objetivos."
+        elif encontrados == total - 1:
+            return "MUY BIEN", "Muy buen trabajo. Solo faltó un objetivo."
+        elif encontrados == total - 2:
+            return "BIEN HECHO", "Buen desempeño. Lograste detectar la mayoría de los estímulos."
+        elif encontrados == total - 3:
+            return "SIGUE ASÍ", "Vas avanzando bien. Con más práctica podés mejorar aún más."
+        elif encontrados == total - 4:
+            return "A PRACTICAR", "Se encontraron varios objetivos, pero conviene seguir entrenando la percepción del movimiento."
+        elif encontrados >= 1:
+            return "A ENTRENAR", "Se detectaron pocos objetivos. Es recomendable reforzar este ejercicio."
+        else:
+            return "A ENTRENAR", "No se detectaron objetivos. Conviene repetir el ejercicio con acompañamiento."
+
+    def finalize_result():
+        nonlocal total_time, avg_time, final_metrics, state
+        elapsed = (pygame.time.get_ticks() - start_ticks) / 1000 if start_ticks else 0.0
+        total_time = min(elapsed, duration_seconds)
+        avg_time = total_time / total_targets if total_targets else 0.0
+        not_found = total_targets - found_count
+        rango, msg = get_feedback(found_count, total_targets)
+        porcentaje = round((found_count / total_targets) * 100) if total_targets else 0
+
+        final_metrics = {
+            "encontrados": found_count,
+            "total": total_targets,
+            "no_encontrados": not_found,
+            "tiempo": round(total_time, 2),
+            "tiempo_promedio": round(avg_time, 2),
+            "clicks_totales": total_clicks,
+            "misclicks": misclicks,
+            "porcentaje": porcentaje,
+            "rango": rango,
+            "msg": msg
+        }
+        save_result_json(patient_id, test_key, final_metrics, attempts)
+        state = "result"
 
     def draw_intro():
-        screen.fill((18, 24, 32))
-
-        t1 = title_font.render(test_name, True, (240, 240, 240))
-        t2 = font.render("Capturá con click los objetos que cruzan la pantalla.", True, (220, 220, 220))
-        t3 = font.render("Presioná ESPACIO para comenzar.", True, (120, 255, 180))
-
-        screen.blit(t1, (60, 70))
-        screen.blit(t2, (60, 210))
-        screen.blit(t3, (60, 290))
+        draw_openrehab_intro_screen(
+            screen,
+            width,
+            height,
+            test_name,
+            patient_id,
+            ["Capturá con click los objetos que cruzan la pantalla antes de que termine el tiempo."],
+            start_text="ESPACIO para comenzar",
+            back_text="ESC para volver al menú",
+            badge_text="Movimiento",
+        )
 
     def draw_playing():
-        screen.fill((240, 240, 240))
+        bg = 240
 
-        elapsed = (pygame.time.get_ticks() - start_ticks) / 1000
+        if difficulty == 1:
+            delta = -140
+        elif difficulty == 2:
+            delta = -80
+        else:
+            delta = -40
+
+        screen.fill((bg, bg, bg))
+
+        elapsed = (pygame.time.get_ticks() - start_ticks) / 1000 if start_ticks else 0.0
         remaining = max(0, duration_seconds - elapsed)
 
         pygame.draw.rect(screen, (30, 30, 30), pygame.Rect(0, 0, width, 90))
-        h1 = font.render(f"Capturados: {final_metric}", True, (255, 255, 255))
+        h1 = font.render(f"Capturados: {found_count}/{total_targets}", True, (255, 255, 255))
         h2 = font.render(f"Tiempo restante: {remaining:0.1f}s", True, (255, 230, 120))
+        h3 = font.render(f"Clicks: {total_clicks} | Misclicks: {misclicks}", True, (255, 255, 255))
         screen.blit(h1, (20, 18))
         screen.blit(h2, (20, 52))
+        screen.blit(h3, (820, 32))
 
         for target in targets:
             if target["active"]:
-                pygame.draw.circle(screen, (60, 140, 255), (int(target["x"]), int(target["y"])), target["r"])
-                pygame.draw.circle(screen, (20, 20, 20), (int(target["x"]), int(target["y"])), target["r"], 2)
+                circle_color = tuple(max(0, min(255, bg + delta)) for _ in range(3))
+                border_delta = int(delta * 0.5)
+                border_color = tuple(max(0, min(255, bg + border_delta)) for _ in range(3))
+
+                pygame.draw.circle(screen, circle_color, (int(target["x"]), int(target["y"])), target["r"])
+                pygame.draw.circle(screen, border_color, (int(target["x"]), int(target["y"])), target["r"], 2)
 
     def draw_result():
-        screen.fill((18, 24, 32))
+        screen.fill((10, 37, 64))
 
-        t1 = title_font.render("Resultado guardado", True, (220, 255, 220))
-        t2 = font.render(f"Métrica principal: {final_metric} {final_unit}", True, (240, 240, 240))
-        t3 = font.render("Presioná ENTER o ESC para volver.", True, (255, 220, 120))
+        if not show_report:
+            txt_surf = font_giant.render(final_metrics["rango"], True, (114, 211, 154))
+            screen.blit(txt_surf, (width // 2 - txt_surf.get_width() // 2, 220))
 
-        screen.blit(t1, (60, 100))
-        screen.blit(t2, (60, 200))
-        screen.blit(t3, (60, 280))
+            msg_surf = font_hud.render(final_metrics["msg"], True, (199, 217, 234))
+            screen.blit(msg_surf, (width // 2 - msg_surf.get_width() // 2, 340))
+
+            for rect, label, color in [
+                (btn_reporte, "VER INFORME", (79, 195, 247)),
+                (btn_volver, "VOLVER", (36, 72, 110))
+            ]:
+                pygame.draw.rect(screen, color, rect, border_radius=12)
+                txt = font_button.render(label, True, (255, 255, 255))
+                screen.blit(txt, txt.get_rect(center=rect.center))
+        else:
+            popup_rect = pygame.Rect(width // 2 - 300, 135, 600, 510)
+            pygame.draw.rect(screen, (244, 248, 252), popup_rect, border_radius=20)
+            pygame.draw.rect(screen, (43, 92, 136), popup_rect, 3, border_radius=20)
+
+            title_surf = font_button.render("INFORME CLÍNICO DETALLADO", True, (10, 37, 64))
+            screen.blit(title_surf, (width // 2 - title_surf.get_width() // 2, 165))
+
+            info_lines = [
+                f"Objetivos encontrados: {final_metrics['encontrados']}/{final_metrics['total']}",
+                f"Objetivos no encontrados: {final_metrics['no_encontrados']}",
+                f"Tiempo total: {final_metrics['tiempo']}s",
+                f"Tiempo promedio por objetivo: {final_metrics['tiempo_promedio']}s",
+                f"Clicks totales: {final_metrics['clicks_totales']}",
+                f"Misclicks: {final_metrics['misclicks']}"
+            ]
+            for i, line in enumerate(info_lines):
+                line_surf = font_report.render(line, True, (36, 72, 110))
+                screen.blit(line_surf, (width // 2 - 235, 235 + (i * 45)))
+
+            pygame.draw.rect(screen, (180, 50, 50), btn_cerrar, border_radius=10)
+            close_surf = font_button.render("CERRAR", True, (255, 255, 255))
+            screen.blit(close_surf, close_surf.get_rect(center=btn_cerrar.center))
 
     running = True
 
     while running:
+        mx, my = pygame.mouse.get_pos()
+
         for event in pygame.event.get():
 
             if event.type == pygame.QUIT:
@@ -1278,27 +1773,52 @@ def run_acinetopsia_test(patient_id: str, test_key: str, test_name: str):
 
                 elif state == "intro" and event.key == pygame.K_SPACE:
                     state = "playing"
+                    show_report = False
+                    found_count = 0
+                    total_clicks = 0
+                    misclicks = 0
+                    total_time = 0.0
+                    avg_time = 0.0
+                    final_metrics = {}
+                    create_targets()
                     start_ticks = pygame.time.get_ticks()
 
-                elif state == "result" and event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                elif state == "result" and event.key == pygame.K_RETURN and not show_report:
                     running = False
 
-            elif event.type == pygame.MOUSEBUTTONDOWN and state == "playing":
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
 
-                mouse_x, mouse_y = event.pos
+                if state == "playing":
+                    total_clicks += 1
+                    clicked_target = False
 
-                for target in targets:
-                    if not target["active"]:
-                        continue
+                    for target in targets:
+                        if not target["active"]:
+                            continue
 
-                    dx = mouse_x - target["x"]
-                    dy = mouse_y - target["y"]
-                    inside = (dx * dx + dy * dy) <= (target["r"] * target["r"])
+                        dx = mx - target["x"]
+                        dy = my - target["y"]
+                        inside = (dx * dx + dy * dy) <= (target["r"] * target["r"])
 
-                    if inside:
-                        target["active"] = False
-                        final_metric += 1
-                        break
+                        if inside:
+                            target["active"] = False
+                            found_count += 1
+                            clicked_target = True
+
+                            if found_count >= total_targets:
+                                finalize_result()
+                            break
+
+                    if not clicked_target:
+                        misclicks += 1
+
+                elif state == "result":
+                    if btn_reporte.collidepoint(mx, my) and not show_report:
+                        show_report = True
+                    elif btn_volver.collidepoint(mx, my) and not show_report:
+                        running = False
+                    elif btn_cerrar.collidepoint(mx, my) and show_report:
+                        show_report = False
 
         if state == "playing":
 
@@ -1309,16 +1829,9 @@ def run_acinetopsia_test(patient_id: str, test_key: str, test_name: str):
                         target["x"] = -30
                         target["y"] = random.randint(140, height - 70)
 
-            elapsed = (pygame.time.get_ticks() - start_ticks) / 1000
-            if elapsed >= duration_seconds:
-                save_result_json(
-                    patient_id,
-                    test_key,
-                    final_metric,
-                    final_unit,
-                    attempts
-                )
-                state = "result"
+            elapsed = (pygame.time.get_ticks() - start_ticks) / 1000 if start_ticks else 0.0
+            if elapsed >= duration_seconds and state == "playing":
+                finalize_result()
 
         if state == "intro":
             draw_intro()
@@ -1363,11 +1876,20 @@ def run_estabilizador_trayectoria_test(patient_id: str, test_key: str, test_name
     finished = False
 
     def draw_intro():
-        screen.fill((18, 24, 32))
-        screen.blit(title_font.render(test_name, True, (240, 240, 240)), (60, 80))
-        screen.blit(font.render("Llevá el cursor por el camino sin tocar los bordes.", True, (220, 220, 220)), (60, 210))
-        screen.blit(font.render("Usá las flechas para avanzar.", True, (220, 220, 220)), (60, 255))
-        screen.blit(font.render("Presioná ESPACIO para comenzar.", True, (120, 255, 180)), (60, 330))
+        draw_openrehab_intro_screen(
+            screen,
+            width,
+            height,
+            test_name,
+            patient_id,
+            [
+                "Llevá el cursor por el camino sin tocar los bordes.",
+                "Usá las flechas para avanzar.",
+            ],
+            start_text="ESPACIO para comenzar",
+            back_text="ESC para volver al menú",
+            badge_text="Coordinación motora",
+        )
 
     def draw_playing():
         screen.fill((240, 240, 240))
@@ -1384,10 +1906,17 @@ def run_estabilizador_trayectoria_test(patient_id: str, test_key: str, test_name
         pygame.draw.circle(screen, (20, 20, 20), (int(player_x), int(player_y)), player_radius, 2)
 
     def draw_result():
-        screen.fill((18, 24, 32))
-        screen.blit(title_font.render("Resultado guardado", True, (220, 255, 220)), (60, 90))
-        screen.blit(font.render(f"Métrica principal: {final_metric} {final_unit}", True, (240, 240, 240)), (60, 200))
-        screen.blit(font.render("ENTER o ESC para volver.", True, (255, 220, 120)), (60, 280))
+        draw_openrehab_result_screen(
+            screen,
+            width,
+            height,
+            test_name,
+            [f"Métrica principal: {final_metric} {final_unit}"],
+            action_text="ENTER para volver",
+            secondary_text="ESC para salir",
+            title="Resultado guardado",
+            badge_text="Resumen final",
+        )
 
     running = True
     prev_inside = True
@@ -1433,7 +1962,7 @@ def run_estabilizador_trayectoria_test(patient_id: str, test_key: str, test_name
 
             if player_x >= finish_x:
                 final_metric = deviations
-                save_result_json(patient_id, test_key, final_metric, final_unit, attempts)
+                save_result_json(patient_id, test_key, {final_unit: final_metric}, attempts)
                 state = "result"
 
         if state == "intro":
@@ -1484,11 +2013,20 @@ def run_ley_de_fitts_test(patient_id: str, test_key: str, test_name: str):
     new_target()
 
     def draw_intro():
-        screen.fill((18, 24, 32))
-        screen.blit(title_font.render(test_name, True, (240, 240, 240)), (60, 80))
-        screen.blit(font.render("Tocá los objetivos lo más rápido y preciso posible.", True, (220, 220, 220)), (60, 210))
-        screen.blit(font.render("Van a cambiar de tamaño y posición.", True, (220, 220, 220)), (60, 255))
-        screen.blit(font.render("Presioná ESPACIO para comenzar.", True, (120, 255, 180)), (60, 330))
+        draw_openrehab_intro_screen(
+            screen,
+            width,
+            height,
+            test_name,
+            patient_id,
+            [
+                "Tocá los objetivos lo más rápido y preciso posible.",
+                "Van a cambiar de tamaño y posición.",
+            ],
+            start_text="ESPACIO para comenzar",
+            back_text="ESC para volver al menú",
+            badge_text="Precisión y velocidad",
+        )
 
     def draw_playing():
         screen.fill((245, 245, 245))
@@ -1500,10 +2038,17 @@ def run_ley_de_fitts_test(patient_id: str, test_key: str, test_name: str):
         pygame.draw.ellipse(screen, (20, 20, 20), target, 3)
 
     def draw_result():
-        screen.fill((18, 24, 32))
-        screen.blit(title_font.render("Resultado guardado", True, (220, 255, 220)), (60, 90))
-        screen.blit(font.render(f"Métrica principal: {final_metric} {final_unit}", True, (240, 240, 240)), (60, 200))
-        screen.blit(font.render("ENTER o ESC para volver.", True, (255, 220, 120)), (60, 280))
+        draw_openrehab_result_screen(
+            screen,
+            width,
+            height,
+            test_name,
+            [f"Métrica principal: {final_metric} {final_unit}"],
+            action_text="ENTER para volver",
+            secondary_text="ESC para salir",
+            title="Resultado guardado",
+            badge_text="Resumen final",
+        )
 
     running = True
 
@@ -1528,7 +2073,7 @@ def run_ley_de_fitts_test(patient_id: str, test_key: str, test_name: str):
 
                 if current_trial >= trials:
                     final_metric = hits
-                    save_result_json(patient_id, test_key, final_metric, final_unit, attempts)
+                    save_result_json(patient_id, test_key, {final_unit: final_metric}, attempts)
                     state = "result"
                 else:
                     new_target()
@@ -1571,12 +2116,21 @@ def run_barrido_ritmico_test(patient_id: str, test_key: str, test_name: str):
     correct = 0
 
     def draw_intro():
-        screen.fill((18, 24, 32))
-        screen.blit(title_font.render(test_name, True, (240, 240, 240)), (60, 80))
-        screen.blit(font.render("El selector recorre opciones automáticamente.", True, (220, 220, 220)), (60, 210))
-        screen.blit(font.render("Presioná ESPACIO cuando esté sobre la opción objetivo.", True, (220, 220, 220)), (60, 255))
-        screen.blit(font.render(f"Objetivo actual: {target_option}", True, (255, 230, 120)), (60, 300))
-        screen.blit(font.render("Presioná ENTER para comenzar.", True, (120, 255, 180)), (60, 355))
+        draw_openrehab_intro_screen(
+            screen,
+            width,
+            height,
+            test_name,
+            patient_id,
+            [
+                "El selector recorre opciones automáticamente.",
+                "Presioná ESPACIO cuando esté sobre la opción objetivo.",
+                f"Objetivo actual: {target_option}",
+            ],
+            start_text="ESPACIO para comenzar",
+            back_text="ESC para volver al menú",
+            badge_text="Scanning",
+        )
 
     def draw_playing():
         screen.fill((245, 245, 245))
@@ -1596,10 +2150,17 @@ def run_barrido_ritmico_test(patient_id: str, test_key: str, test_name: str):
         screen.blit(font.render(f"Objetivo: {target_option}", True, (20, 20, 20)), (500, 500))
 
     def draw_result():
-        screen.fill((18, 24, 32))
-        screen.blit(title_font.render("Resultado guardado", True, (220, 255, 220)), (60, 90))
-        screen.blit(font.render(f"Métrica principal: {final_metric} {final_unit}", True, (240, 240, 240)), (60, 200))
-        screen.blit(font.render("ENTER o ESC para volver.", True, (255, 220, 120)), (60, 280))
+        draw_openrehab_result_screen(
+            screen,
+            width,
+            height,
+            test_name,
+            [f"Métrica principal: {final_metric} {final_unit}"],
+            action_text="ENTER para volver",
+            secondary_text="ESC para salir",
+            title="Resultado guardado",
+            badge_text="Resumen final",
+        )
 
     running = True
 
@@ -1626,7 +2187,7 @@ def run_barrido_ritmico_test(patient_id: str, test_key: str, test_name: str):
 
                     if current_round >= total_rounds:
                         final_metric = correct
-                        save_result_json(patient_id, test_key, final_metric, final_unit, attempts)
+                        save_result_json(patient_id, test_key, {final_unit: final_metric}, attempts)
                         state = "result"
                     else:
                         target_option = random.choice(options)
@@ -1681,10 +2242,17 @@ def run_arrastre_sostenido_test(patient_id: str, test_key: str, test_name: str):
         obj_rect.y = 320
 
     def draw_intro():
-        screen.fill((18, 24, 32))
-        screen.blit(title_font.render(test_name, True, (240, 240, 240)), (60, 80))
-        screen.blit(font.render("Arrastrá el objeto hasta el área objetivo sin soltarlo.", True, (220, 220, 220)), (60, 210))
-        screen.blit(font.render("Presioná ESPACIO para comenzar.", True, (120, 255, 180)), (60, 300))
+        draw_openrehab_intro_screen(
+            screen,
+            width,
+            height,
+            test_name,
+            patient_id,
+            ["Arrastrá el objeto hasta el área objetivo sin soltarlo."],
+            start_text="ESPACIO para comenzar",
+            back_text="ESC para volver al menú",
+            badge_text="Drag & Drop",
+        )
 
     def draw_playing():
         screen.fill((245, 245, 245))
@@ -1699,10 +2267,17 @@ def run_arrastre_sostenido_test(patient_id: str, test_key: str, test_name: str):
         pygame.draw.rect(screen, (20, 20, 20), obj_rect, 3, border_radius=14)
 
     def draw_result():
-        screen.fill((18, 24, 32))
-        screen.blit(title_font.render("Resultado guardado", True, (220, 255, 220)), (60, 90))
-        screen.blit(font.render(f"Métrica principal: {final_metric} {final_unit}", True, (240, 240, 240)), (60, 200))
-        screen.blit(font.render("ENTER o ESC para volver.", True, (255, 220, 120)), (60, 280))
+        draw_openrehab_result_screen(
+            screen,
+            width,
+            height,
+            test_name,
+            [f"Métrica principal: {final_metric} {final_unit}"],
+            action_text="ENTER para volver",
+            secondary_text="ESC para salir",
+            title="Resultado guardado",
+            badge_text="Resumen final",
+        )
 
     running = True
 
@@ -1734,7 +2309,7 @@ def run_arrastre_sostenido_test(patient_id: str, test_key: str, test_name: str):
 
                     if round_count >= total_rounds:
                         final_metric = completed
-                        save_result_json(patient_id, test_key, final_metric, final_unit, attempts)
+                        save_result_json(patient_id, test_key, {final_unit: final_metric}, attempts)
                         state = "result"
                     else:
                         reset_object()
@@ -1789,11 +2364,21 @@ def run_ganancia_adaptativa_test(patient_id: str, test_key: str, test_name: str)
     ]
 
     def draw_intro():
-        screen.fill((18, 24, 32))
-        screen.blit(title_font.render(test_name, True, (240, 240, 240)), (60, 80))
-        screen.blit(font.render("Mové el cursor adaptado hasta alcanzar los objetivos.", True, (220, 220, 220)), (60, 210))
-        screen.blit(font.render("La sensibilidad está aumentada para reducir el recorrido.", True, (220, 220, 220)), (60, 255))
-        screen.blit(font.render("Usá flechas y presioná ESPACIO para comenzar.", True, (120, 255, 180)), (60, 330))
+        draw_openrehab_intro_screen(
+            screen,
+            width,
+            height,
+            test_name,
+            patient_id,
+            [
+                "Mové el cursor adaptado hasta alcanzar los objetivos.",
+                "La sensibilidad está aumentada para reducir el recorrido.",
+                "Usá flechas y presioná ESPACIO para comenzar.",
+            ],
+            start_text="ESPACIO para comenzar",
+            back_text="ESC para volver al menú",
+            badge_text="Adaptación motora",
+        )
 
     def draw_playing():
         screen.fill((245, 245, 245))
@@ -1810,10 +2395,17 @@ def run_ganancia_adaptativa_test(patient_id: str, test_key: str, test_name: str)
         pygame.draw.circle(screen, (20, 20, 20), (int(cursor_x), int(cursor_y)), 15, 2)
 
     def draw_result():
-        screen.fill((18, 24, 32))
-        screen.blit(title_font.render("Resultado guardado", True, (220, 255, 220)), (60, 90))
-        screen.blit(font.render(f"Métrica principal: {final_metric} {final_unit}", True, (240, 240, 240)), (60, 200))
-        screen.blit(font.render("ENTER o ESC para volver.", True, (255, 220, 120)), (60, 280))
+        draw_openrehab_result_screen(
+            screen,
+            width,
+            height,
+            test_name,
+            [f"Métrica principal: {final_metric} {final_unit}"],
+            action_text="ENTER para volver",
+            secondary_text="ESC para salir",
+            title="Resultado guardado",
+            badge_text="Resumen final",
+        )
 
     running = True
 
@@ -1852,7 +2444,7 @@ def run_ganancia_adaptativa_test(patient_id: str, test_key: str, test_name: str)
 
                 if target_index >= total_targets:
                     final_metric = hits
-                    save_result_json(patient_id, test_key, final_metric, final_unit, attempts)
+                    save_result_json(patient_id, test_key, {final_unit: final_metric}, attempts)
                     state = "result"
 
         if state == "intro":
@@ -1918,11 +2510,20 @@ def run_reaccion_multimodal_test(patient_id: str, test_key: str, test_name: str)
     next_trial()
 
     def draw_intro():
-        screen.fill((18, 24, 32))
-        screen.blit(title_font.render(test_name, True, (240, 240, 240)), (60, 80))
-        screen.blit(font.render("Respondé a estímulos visuales y auditivos.", True, (220, 220, 220)), (60, 210))
-        screen.blit(font.render("Click para estímulo visual, B para estímulo auditivo.", True, (220, 220, 220)), (60, 255))
-        screen.blit(font.render("Presioná ESPACIO para comenzar.", True, (120, 255, 180)), (60, 330))
+        draw_openrehab_intro_screen(
+            screen,
+            width,
+            height,
+            test_name,
+            patient_id,
+            [
+                "Respondé a estímulos visuales y auditivos.",
+                "Click para estímulo visual, B para estímulo auditivo.",
+            ],
+            start_text="ESPACIO para comenzar",
+            back_text="ESC para volver al menú",
+            badge_text="Reacción multimodal",
+        )
 
     def draw_playing():
         screen.fill((245, 245, 245))
@@ -1937,10 +2538,17 @@ def run_reaccion_multimodal_test(patient_id: str, test_key: str, test_name: str)
             screen.blit(font.render("Escuchá el estímulo y respondé con la tecla B", True, (20, 20, 20)), (350, 340))
 
     def draw_result():
-        screen.fill((18, 24, 32))
-        screen.blit(title_font.render("Resultado guardado", True, (220, 255, 220)), (60, 90))
-        screen.blit(font.render(f"Métrica principal: {final_metric} {final_unit}", True, (240, 240, 240)), (60, 200))
-        screen.blit(font.render("ENTER o ESC para volver.", True, (255, 220, 120)), (60, 280))
+        draw_openrehab_result_screen(
+            screen,
+            width,
+            height,
+            test_name,
+            [f"Métrica principal: {final_metric} {final_unit}"],
+            action_text="ENTER para volver",
+            secondary_text="ESC para salir",
+            title="Resultado guardado",
+            badge_text="Resumen final",
+        )
 
     running = True
 
@@ -1962,7 +2570,7 @@ def run_reaccion_multimodal_test(patient_id: str, test_key: str, test_name: str)
                     current_trial += 1
                     if current_trial >= total_trials:
                         final_metric = correct
-                        save_result_json(patient_id, test_key, final_metric, final_unit, attempts)
+                        save_result_json(patient_id, test_key, {final_unit: final_metric}, attempts)
                         state = "result"
                     else:
                         next_trial()
@@ -1978,7 +2586,7 @@ def run_reaccion_multimodal_test(patient_id: str, test_key: str, test_name: str)
                     current_trial += 1
                     if current_trial >= total_trials:
                         final_metric = correct
-                        save_result_json(patient_id, test_key, final_metric, final_unit, attempts)
+                        save_result_json(patient_id, test_key, {final_unit: final_metric}, attempts)
                         state = "result"
                     else:
                         next_trial()
@@ -2035,10 +2643,17 @@ def run_denominacion_fonologica_test(patient_id: str, test_key: str, test_name: 
     build_option_buttons()
 
     def draw_intro():
-        screen.fill((18, 24, 32))
-        screen.blit(title_font.render(test_name, True, (240, 240, 240)), (60, 80))
-        screen.blit(font.render("Elegí el nombre correcto entre opciones parecidas.", True, (220, 220, 220)), (60, 220))
-        screen.blit(font.render("Presioná ESPACIO para comenzar.", True, (120, 255, 180)), (60, 280))
+        draw_openrehab_intro_screen(
+            screen,
+            width,
+            height,
+            test_name,
+            patient_id,
+            ["Elegí el nombre correcto entre opciones parecidas."],
+            start_text="ESPACIO para comenzar",
+            back_text="ESC para volver al menú",
+            badge_text="Lenguaje",
+        )
 
     def draw_playing():
         screen.fill((245, 245, 245))
@@ -2059,10 +2674,17 @@ def run_denominacion_fonologica_test(patient_id: str, test_key: str, test_name: 
             screen.blit(txt, txt_rect)
 
     def draw_result():
-        screen.fill((18, 24, 32))
-        screen.blit(title_font.render("Resultado guardado", True, (220, 255, 220)), (60, 100))
-        screen.blit(font.render(f"Métrica principal: {final_metric} {final_unit}", True, (240, 240, 240)), (60, 200))
-        screen.blit(font.render("ENTER o ESC para volver.", True, (255, 220, 120)), (60, 280))
+        draw_openrehab_result_screen(
+            screen,
+            width,
+            height,
+            test_name,
+            [f"Métrica principal: {final_metric} {final_unit}"],
+            action_text="ENTER para volver",
+            secondary_text="ESC para salir",
+            title="Resultado guardado",
+            badge_text="Resumen final",
+        )
 
     running = True
 
@@ -2092,7 +2714,7 @@ def run_denominacion_fonologica_test(patient_id: str, test_key: str, test_name: 
 
                         if current_item >= len(items):
                             final_metric = correct_count
-                            save_result_json(patient_id, test_key, final_metric, final_unit, attempts)
+                            save_result_json(patient_id, test_key, {final_unit: final_metric}, attempts)
                             state = "result"
                         else:
                             build_option_buttons()
@@ -2144,10 +2766,17 @@ def run_memoria_n_back_test(patient_id: str, test_key: str, test_name: str):
             total_matches += 1
 
     def draw_intro():
-        screen.fill((18, 24, 32))
-        screen.blit(title_font.render(test_name, True, (240, 240, 240)), (60, 80))
-        screen.blit(font.render(f"Presioná ESPACIO si la figura actual coincide con la de hace {n_value} pasos.", True, (220, 220, 220)), (60, 220))
-        screen.blit(font.render("Presioná ENTER para comenzar.", True, (120, 255, 180)), (60, 280))
+        draw_openrehab_intro_screen(
+            screen,
+            width,
+            height,
+            test_name,
+            patient_id,
+            [f"Presioná ESPACIO si la figura actual coincide con la de hace {n_value} pasos."],
+            start_text="ENTER para comenzar",
+            back_text="ESC para volver al menú",
+            badge_text="Memoria de trabajo",
+        )
 
     def draw_playing():
         screen.fill((245, 245, 245))
@@ -2161,11 +2790,20 @@ def run_memoria_n_back_test(patient_id: str, test_key: str, test_name: str):
             screen.blit(txt, txt_rect)
 
     def draw_result():
-        screen.fill((18, 24, 32))
-        screen.blit(title_font.render("Resultado guardado", True, (220, 255, 220)), (60, 100))
-        screen.blit(font.render(f"Métrica principal: {final_metric} {final_unit}", True, (240, 240, 240)), (60, 200))
-        screen.blit(font.render(f"Coincidencias reales en la secuencia: {total_matches}", True, (240, 240, 240)), (60, 250))
-        screen.blit(font.render("ENTER o ESC para volver.", True, (255, 220, 120)), (60, 320))
+        draw_openrehab_result_screen(
+            screen,
+            width,
+            height,
+            test_name,
+            [
+                f"Métrica principal: {final_metric} {final_unit}",
+                f"Coincidencias reales en la secuencia: {total_matches}",
+            ],
+            action_text="ENTER para volver",
+            secondary_text="ESC para salir",
+            title="Resultado guardado",
+            badge_text="Resumen final",
+        )
 
     running = True
 
@@ -2204,7 +2842,7 @@ def run_memoria_n_back_test(patient_id: str, test_key: str, test_name: str):
                     current_index += 1
                     if current_index >= len(sequence):
                         final_metric = correct_count
-                        save_result_json(patient_id, test_key, final_metric, final_unit, attempts)
+                        save_result_json(patient_id, test_key, {final_unit: final_metric}, attempts)
                         state = "result"
                     else:
                         showing_item = True
@@ -2272,10 +2910,17 @@ def run_efecto_stroop_test(patient_id: str, test_key: str, test_name: str):
     build_buttons()
 
     def draw_intro():
-        screen.fill((18, 24, 32))
-        screen.blit(title_font.render(test_name, True, (240, 240, 240)), (60, 80))
-        screen.blit(font.render("Elegí el color de la tinta, ignorando la palabra escrita.", True, (220, 220, 220)), (60, 220))
-        screen.blit(font.render("Presioná ESPACIO para comenzar.", True, (120, 255, 180)), (60, 280))
+        draw_openrehab_intro_screen(
+            screen,
+            width,
+            height,
+            test_name,
+            patient_id,
+            ["Elegí el color de la tinta, ignorando la palabra escrita."],
+            start_text="ESPACIO para comenzar",
+            back_text="ESC para volver al menú",
+            badge_text="Inhibición",
+        )
 
     def draw_playing():
         screen.fill((245, 245, 245))
@@ -2295,10 +2940,17 @@ def run_efecto_stroop_test(patient_id: str, test_key: str, test_name: str):
             screen.blit(btn_txt, btn_rect)
 
     def draw_result():
-        screen.fill((18, 24, 32))
-        screen.blit(title_font.render("Resultado guardado", True, (220, 255, 220)), (60, 100))
-        screen.blit(font.render(f"Métrica principal: {final_metric} {final_unit}", True, (240, 240, 240)), (60, 200))
-        screen.blit(font.render("ENTER o ESC para volver.", True, (255, 220, 120)), (60, 280))
+        draw_openrehab_result_screen(
+            screen,
+            width,
+            height,
+            test_name,
+            [f"Métrica principal: {final_metric} {final_unit}"],
+            action_text="ENTER para volver",
+            secondary_text="ESC para salir",
+            title="Resultado guardado",
+            badge_text="Resumen final",
+        )
 
     running = True
 
@@ -2327,7 +2979,7 @@ def run_efecto_stroop_test(patient_id: str, test_key: str, test_name: str):
 
                         if current_trial >= len(trials):
                             final_metric = correct_count
-                            save_result_json(patient_id, test_key, final_metric, final_unit, attempts)
+                            save_result_json(patient_id, test_key, {final_unit: final_metric}, attempts)
                             state = "result"
                         break
 
@@ -2382,10 +3034,17 @@ def run_completamiento_semantico_test(patient_id: str, test_key: str, test_name:
     build_buttons()
 
     def draw_intro():
-        screen.fill((18, 24, 32))
-        screen.blit(title_font.render(test_name, True, (240, 240, 240)), (60, 80))
-        screen.blit(font.render("Elegí la palabra que completa correctamente la oración.", True, (220, 220, 220)), (60, 220))
-        screen.blit(font.render("Presioná ESPACIO para comenzar.", True, (120, 255, 180)), (60, 280))
+        draw_openrehab_intro_screen(
+            screen,
+            width,
+            height,
+            test_name,
+            patient_id,
+            ["Elegí la palabra que completa correctamente la oración."],
+            start_text="ESPACIO para comenzar",
+            back_text="ESC para volver al menú",
+            badge_text="Comprensión semántica",
+        )
 
     def draw_playing():
         screen.fill((245, 245, 245))
@@ -2407,10 +3066,17 @@ def run_completamiento_semantico_test(patient_id: str, test_key: str, test_name:
             screen.blit(txt, txt_rect)
 
     def draw_result():
-        screen.fill((18, 24, 32))
-        screen.blit(title_font.render("Resultado guardado", True, (220, 255, 220)), (60, 100))
-        screen.blit(font.render(f"Métrica principal: {final_metric} {final_unit}", True, (240, 240, 240)), (60, 200))
-        screen.blit(font.render("ENTER o ESC para volver.", True, (255, 220, 120)), (60, 280))
+        draw_openrehab_result_screen(
+            screen,
+            width,
+            height,
+            test_name,
+            [f"Métrica principal: {final_metric} {final_unit}"],
+            action_text="ENTER para volver",
+            secondary_text="ESC para salir",
+            title="Resultado guardado",
+            badge_text="Resumen final",
+        )
 
     running = True
 
@@ -2440,7 +3106,7 @@ def run_completamiento_semantico_test(patient_id: str, test_key: str, test_name:
 
                         if current_item >= len(items):
                             final_metric = correct_count
-                            save_result_json(patient_id, test_key, final_metric, final_unit, attempts)
+                            save_result_json(patient_id, test_key, {final_unit: final_metric}, attempts)
                             state = "result"
                         else:
                             build_buttons()
@@ -2498,10 +3164,17 @@ def run_intruso_logico_test(patient_id: str, test_key: str, test_name: str):
     build_buttons()
 
     def draw_intro():
-        screen.fill((18, 24, 32))
-        screen.blit(title_font.render(test_name, True, (240, 240, 240)), (60, 80))
-        screen.blit(font.render("Elegí el elemento que no pertenece al grupo.", True, (220, 220, 220)), (60, 220))
-        screen.blit(font.render("Presioná ESPACIO para comenzar.", True, (120, 255, 180)), (60, 280))
+        draw_openrehab_intro_screen(
+            screen,
+            width,
+            height,
+            test_name,
+            patient_id,
+            ["Elegí el elemento que no pertenece al grupo."],
+            start_text="ESPACIO para comenzar",
+            back_text="ESC para volver al menú",
+            badge_text="Razonamiento lógico",
+        )
 
     def draw_playing():
         screen.fill((245, 245, 245))
@@ -2519,10 +3192,17 @@ def run_intruso_logico_test(patient_id: str, test_key: str, test_name: str):
             screen.blit(txt, txt_rect)
 
     def draw_result():
-        screen.fill((18, 24, 32))
-        screen.blit(title_font.render("Resultado guardado", True, (220, 255, 220)), (60, 100))
-        screen.blit(font.render(f"Métrica principal: {final_metric} {final_unit}", True, (240, 240, 240)), (60, 200))
-        screen.blit(font.render("ENTER o ESC para volver.", True, (255, 220, 120)), (60, 280))
+        draw_openrehab_result_screen(
+            screen,
+            width,
+            height,
+            test_name,
+            [f"Métrica principal: {final_metric} {final_unit}"],
+            action_text="ENTER para volver",
+            secondary_text="ESC para salir",
+            title="Resultado guardado",
+            badge_text="Resumen final",
+        )
 
     running = True
 
@@ -2551,7 +3231,7 @@ def run_intruso_logico_test(patient_id: str, test_key: str, test_name: str):
                         current_group += 1
                         if current_group >= len(groups):
                             final_metric = correct_count
-                            save_result_json(patient_id, test_key, final_metric, final_unit, attempts)
+                            save_result_json(patient_id, test_key, {final_unit: final_metric}, attempts)
                             state = "result"
                         else:
                             build_buttons()
@@ -2627,10 +3307,17 @@ def run_secuenciacion_avd_test(patient_id: str, test_key: str, test_name: str):
     build_buttons()
 
     def draw_intro():
-        screen.fill((18, 24, 32))
-        screen.blit(title_font.render(test_name, True, (240, 240, 240)), (60, 80))
-        screen.blit(font.render("Seleccioná los pasos en el orden correcto de la actividad.", True, (220, 220, 220)), (60, 220))
-        screen.blit(font.render("Presioná ESPACIO para comenzar.", True, (120, 255, 180)), (60, 280))
+        draw_openrehab_intro_screen(
+            screen,
+            width,
+            height,
+            test_name,
+            patient_id,
+            ["Seleccioná los pasos en el orden correcto de la actividad."],
+            start_text="ESPACIO para comenzar",
+            back_text="ESC para volver al menú",
+            badge_text="Secuenciación",
+        )
 
     def draw_playing():
         screen.fill((245, 245, 245))
@@ -2652,10 +3339,17 @@ def run_secuenciacion_avd_test(patient_id: str, test_key: str, test_name: str):
             screen.blit(txt, txt_rect)
 
     def draw_result():
-        screen.fill((18, 24, 32))
-        screen.blit(title_font.render("Resultado guardado", True, (220, 255, 220)), (60, 100))
-        screen.blit(font.render(f"Métrica principal: {final_metric} {final_unit}", True, (240, 240, 240)), (60, 200))
-        screen.blit(font.render("ENTER o ESC para volver.", True, (255, 220, 120)), (60, 280))
+        draw_openrehab_result_screen(
+            screen,
+            width,
+            height,
+            test_name,
+            [f"Métrica principal: {final_metric} {final_unit}"],
+            action_text="ENTER para volver",
+            secondary_text="ESC para salir",
+            title="Resultado guardado",
+            badge_text="Resumen final",
+        )
 
     running = True
 
@@ -2689,7 +3383,7 @@ def run_secuenciacion_avd_test(patient_id: str, test_key: str, test_name: str):
 
                             if current_sequence >= len(sequences):
                                 final_metric = correct_count
-                                save_result_json(patient_id, test_key, final_metric, final_unit, attempts)
+                                save_result_json(patient_id, test_key, {final_unit: final_metric}, attempts)
                                 state = "result"
                             else:
                                 build_buttons()
@@ -2742,6 +3436,191 @@ class OpenRehabApp:
     def clear_main(self):
         for widget in self.main_container.winfo_children():
             widget.destroy()
+
+
+    def get_tests_dict_for_current_area(self):
+        if self.current_area_key.get() == "area1":
+            return AREA_1_TESTS
+        if self.current_area_key.get() == "area2":
+            return AREA_2_TESTS
+        return AREA_3_TESTS
+
+    def open_saved_report(self, result: dict):
+        colors = {
+            "bg_main": "#0A2540",
+            "bg_card": "#F4F8FC",
+            "border": "#2B5C88",
+            "title": "#0A2540",
+            "text": "#24435F",
+            "accent": "#4FC3F7",
+            "danger": "#B43232",
+        }
+
+        test_dict = {}
+        test_dict.update(AREA_1_TESTS)
+        test_dict.update(AREA_2_TESTS)
+        test_dict.update(AREA_3_TESTS)
+
+        top = tk.Toplevel(self.root)
+        top.title("Informe guardado")
+        top.geometry("760x620")
+        top.configure(bg=colors["bg_main"])
+        top.transient(self.root)
+        top.grab_set()
+
+        card = tk.Frame(top, bg=colors["bg_card"], highlightthickness=2, highlightbackground=colors["border"])
+        card.pack(fill="both", expand=True, padx=28, pady=28)
+
+        tk.Frame(card, bg=colors["accent"], height=8).pack(fill="x", side="top")
+
+        pretty_test = test_dict.get(result.get("test", ""), result.get("test", "Test"))
+        tk.Label(
+            card,
+            text="INFORME CLÍNICO DETALLADO",
+            font=("Arial", 18, "bold"),
+            fg=colors["title"],
+            bg=colors["bg_card"]
+        ).pack(pady=(20, 6))
+
+        tk.Label(
+            card,
+            text=pretty_test,
+            font=("Arial", 13, "bold"),
+            fg=colors["text"],
+            bg=colors["bg_card"]
+        ).pack()
+
+        container = tk.Frame(card, bg=colors["bg_card"])
+        container.pack(fill="both", expand=True, padx=26, pady=(18, 16))
+
+        scrollbar = tk.Scrollbar(container)
+        scrollbar.pack(side="right", fill="y")
+
+        text = tk.Text(
+            container,
+            yscrollcommand=scrollbar.set,
+            bg=colors["bg_card"],
+            fg=colors["text"],
+            font=("Arial", 12),
+            wrap="word",
+            relief="flat",
+            bd=0,
+            padx=6,
+            pady=6,
+            spacing1=3,
+            spacing3=8
+        )
+        text.pack(side="left", fill="both", expand=True)
+        scrollbar.config(command=text.yview)
+
+        for line in build_report_lines(result):
+            text.insert("end", line + "\n")
+
+        text.config(state="disabled")
+
+        tk.Button(
+            card,
+            text="CERRAR",
+            font=("Arial", 12, "bold"),
+            bg=colors["danger"],
+            fg="white",
+            activebackground="#982929",
+            activeforeground="white",
+            relief="flat",
+            bd=0,
+            cursor="hand2",
+            command=top.destroy
+        ).pack(pady=(0, 20), ipadx=18, ipady=8)
+
+    def populate_history_panel(self, parent, patient_id: str, tests_dict: dict):
+        for child in parent.winfo_children():
+            child.destroy()
+
+        history_results = load_patient_results(patient_id)
+
+        if not history_results:
+            tk.Label(
+                parent,
+                text="No se encontraron resultados previos para este paciente en la carpeta /results.",
+                font=("Arial", 11),
+                fg="#C7D9EA",
+                bg="#102F4E",
+                justify="left",
+                wraplength=420
+            ).pack(anchor="w", padx=14, pady=14)
+            return
+
+        canvas = tk.Canvas(parent, bg="#102F4E", highlightthickness=0, bd=0)
+        scrollbar = tk.Scrollbar(parent, orient="vertical", command=canvas.yview)
+        inner = tk.Frame(canvas, bg="#102F4E")
+
+        inner.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+
+        canvas.create_window((0, 0), window=inner, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        for item in history_results:
+            pretty_test = tests_dict.get(item.get("test", ""), item.get("test", "Test desconocido"))
+            summary = get_metric_summary(item)
+
+            card = tk.Frame(
+                inner,
+                bg="#163A63",
+                highlightthickness=1,
+                highlightbackground="#2B5C88"
+            )
+            card.pack(fill="x", padx=10, pady=8)
+
+            tk.Label(
+                card,
+                text=pretty_test,
+                font=("Arial", 11, "bold"),
+                fg="#F4F8FC",
+                bg="#163A63",
+                anchor="w",
+                justify="left",
+                wraplength=320
+            ).pack(anchor="w", padx=12, pady=(10, 2))
+
+            tk.Label(
+                card,
+                text=f"{item.get('fecha', '-')}",
+                font=("Arial", 10),
+                fg="#C7D9EA",
+                bg="#163A63",
+                anchor="w"
+            ).pack(anchor="w", padx=12)
+
+            tk.Label(
+                card,
+                text=summary,
+                font=("Arial", 10),
+                fg="#8FB1CC",
+                bg="#163A63",
+                anchor="w",
+                justify="left",
+                wraplength=320
+            ).pack(anchor="w", padx=12, pady=(4, 10))
+
+            tk.Button(
+                card,
+                text="Ver informe",
+                font=("Arial", 10, "bold"),
+                bg="#4FC3F7",
+                fg="white",
+                activebackground="#35B5EC",
+                activeforeground="white",
+                relief="flat",
+                bd=0,
+                cursor="hand2",
+                command=lambda result=item: self.open_saved_report(result)
+            ).pack(anchor="e", padx=12, pady=(0, 12), ipadx=10, ipady=4)
 
     # --------------------------------------------------------
     # PANTALLA 1: LOGIN / CARGAR PARTIDA
@@ -3140,9 +4019,9 @@ class OpenRehabApp:
             buttons_row,
             text="Área 1\nVisión y Percepción",
             font=("Arial", 13, "bold"),
-            bg=btn_primary,
+            bg="#4DA6FF",              # ← azul celeste
             fg="white",
-            activebackground=btn_primary_active,
+            activebackground="#3A8EDB",  # ← azul más oscuro al click
             activeforeground="white",
             relief="flat",
             bd=0,
@@ -3157,9 +4036,9 @@ class OpenRehabApp:
             buttons_row,
             text="Área 2\nControl Motor y Acceso",
             font=("Arial", 13, "bold"),
-            bg=btn_secondary,
+            bg="#FFD6A5",
             fg="white",
-            activebackground=btn_secondary_active,
+            activebackground="#FFCC8F",
             activeforeground="white",
             relief="flat",
             bd=0,
@@ -3174,9 +4053,9 @@ class OpenRehabApp:
             buttons_row,
             text="Área 3\nCognición y Lenguaje",
             font=("Arial", 13, "bold"),
-            bg="#30506F",
+            bg="#F6E7A1",
             fg="white",
-            activebackground="#27445F",
+            activebackground="#EEDB84",
             activeforeground="white",
             relief="flat",
             bd=0,
@@ -3382,8 +4261,7 @@ class OpenRehabApp:
             last_result = get_last_result_for_test(patient_id, test_key)
 
             if last_result:
-                metric = last_result.get("metrica_principal", "-")
-                unit = last_result.get("unidad", "-")
+                summary = get_metric_summary(last_result)
                 date = last_result.get("fecha", "-")
                 attempts = last_result.get("intentos", "-")
 
@@ -3391,9 +4269,9 @@ class OpenRehabApp:
                     text=(
                         f"Último resultado encontrado:\n\n"
                         f"• Fecha: {date}\n"
-                        f"• Métrica principal: {metric} {unit}\n"
+                        f"• Resumen: {summary}\n"
                         f"• Intentos: {attempts}\n\n"
-                        f"Al finalizar un nuevo intento se guardará otro JSON en /results."
+                        f"Podés revisar el detalle completo desde el historial del paciente."
                     )
                 )
             else:
@@ -3461,7 +4339,6 @@ class OpenRehabApp:
             bg=bg_card
         ).pack(anchor="w", padx=20, pady=(0, 14))
 
-        history_results = load_patient_results(patient_id)
 
         history_container = tk.Frame(
             right_panel,
@@ -3471,44 +4348,8 @@ class OpenRehabApp:
         )
         history_container.pack(fill="both", expand=True, padx=20, pady=(0, 20))
 
-        history_scroll = tk.Scrollbar(history_container)
-        history_scroll.pack(side="right", fill="y")
+        self.populate_history_panel(history_container, patient_id, self.get_tests_dict_for_current_area())
 
-        history_list = tk.Text(
-            history_container,
-            yscrollcommand=history_scroll.set,
-            bg="#102F4E",
-            fg=text_primary,
-            font=("Consolas", 10),
-            wrap="word",
-            relief="flat",
-            padx=14,
-            pady=14,
-            insertbackground=text_primary
-        )
-        history_list.pack(side="left", fill="both", expand=True)
-
-        history_scroll.config(command=history_list.yview)
-
-        if history_results:
-            for item in history_results:
-                test_name = AREA_1_TESTS.get(item.get("test", ""), item.get("test", "Test desconocido"))
-                line = (
-                    f"Fecha: {item.get('fecha', '-')}\n"
-                    f"Test: {test_name}\n"
-                    f"Métrica: {item.get('metrica_principal', '-')} {item.get('unidad', '-')}\n"
-                    f"Intentos: {item.get('intentos', '-')}\n"
-                    f"Archivo: {item.get('__file', '-')}\n"
-                    f"{'-' * 58}\n"
-                )
-                history_list.insert("end", line)
-        else:
-            history_list.insert(
-                "end",
-                "No se encontraron resultados previos para este paciente en la carpeta /results.\n"
-            )
-
-        history_list.config(state="disabled")
 
         bottom_wrap = tk.Frame(outer, bg=bg_main)
         bottom_wrap.pack(fill="x", side="bottom")
@@ -3665,8 +4506,7 @@ class OpenRehabApp:
             last_result = get_last_result_for_test(patient_id, test_key)
 
             if last_result:
-                metric = last_result.get("metrica_principal", "-")
-                unit = last_result.get("unidad", "-")
+                summary = get_metric_summary(last_result)
                 date = last_result.get("fecha", "-")
                 attempts = last_result.get("intentos", "-")
 
@@ -3674,9 +4514,9 @@ class OpenRehabApp:
                     text=(
                         f"Último resultado encontrado:\n\n"
                         f"• Fecha: {date}\n"
-                        f"• Métrica principal: {metric} {unit}\n"
+                        f"• Resumen: {summary}\n"
                         f"• Intentos: {attempts}\n\n"
-                        f"Al finalizar un nuevo intento se guardará otro JSON en /results."
+                        f"Podés revisar el detalle completo desde el historial del paciente."
                     )
                 )
             else:
@@ -3741,7 +4581,6 @@ class OpenRehabApp:
             bg=bg_card
         ).pack(anchor="w", padx=20, pady=(0, 14))
 
-        history_results = load_patient_results(patient_id)
 
         history_container = tk.Frame(
             right_panel,
@@ -3751,44 +4590,8 @@ class OpenRehabApp:
         )
         history_container.pack(fill="both", expand=True, padx=20, pady=(0, 20))
 
-        history_scroll = tk.Scrollbar(history_container)
-        history_scroll.pack(side="right", fill="y")
+        self.populate_history_panel(history_container, patient_id, self.get_tests_dict_for_current_area())
 
-        history_list = tk.Text(
-            history_container,
-            yscrollcommand=history_scroll.set,
-            bg="#102F4E",
-            fg=text_primary,
-            font=("Consolas", 10),
-            wrap="word",
-            relief="flat",
-            padx=14,
-            pady=14,
-            insertbackground=text_primary
-        )
-        history_list.pack(side="left", fill="both", expand=True)
-
-        history_scroll.config(command=history_list.yview)
-
-        if history_results:
-            for item in history_results:
-                test_name = AREA_2_TESTS.get(item.get("test", ""), item.get("test", "Test desconocido"))
-                line = (
-                    f"Fecha: {item.get('fecha', '-')}\n"
-                    f"Test: {test_name}\n"
-                    f"Métrica: {item.get('metrica_principal', '-')} {item.get('unidad', '-')}\n"
-                    f"Intentos: {item.get('intentos', '-')}\n"
-                    f"Archivo: {item.get('__file', '-')}\n"
-                    f"{'-' * 58}\n"
-                )
-                history_list.insert("end", line)
-        else:
-            history_list.insert(
-                "end",
-                "No se encontraron resultados previos para este paciente en la carpeta /results.\n"
-            )
-
-        history_list.config(state="disabled")
 
         bottom_wrap = tk.Frame(outer, bg=bg_main)
         bottom_wrap.pack(fill="x", side="bottom")
@@ -3946,8 +4749,7 @@ class OpenRehabApp:
             last_result = get_last_result_for_test(patient_id, test_key)
 
             if last_result:
-                metric = last_result.get("metrica_principal", "-")
-                unit = last_result.get("unidad", "-")
+                summary = get_metric_summary(last_result)
                 date = last_result.get("fecha", "-")
                 attempts = last_result.get("intentos", "-")
 
@@ -3955,9 +4757,9 @@ class OpenRehabApp:
                     text=(
                         f"Último resultado encontrado:\n\n"
                         f"• Fecha: {date}\n"
-                        f"• Métrica principal: {metric} {unit}\n"
+                        f"• Resumen: {summary}\n"
                         f"• Intentos: {attempts}\n\n"
-                        f"Al finalizar un nuevo intento se guardará otro JSON en /results."
+                        f"Podés revisar el detalle completo desde el historial del paciente."
                     )
                 )
             else:
@@ -4022,7 +4824,6 @@ class OpenRehabApp:
             bg=bg_card
         ).pack(anchor="w", padx=20, pady=(0, 14))
 
-        history_results = load_patient_results(patient_id)
 
         history_container = tk.Frame(
             right_panel,
@@ -4032,44 +4833,8 @@ class OpenRehabApp:
         )
         history_container.pack(fill="both", expand=True, padx=20, pady=(0, 20))
 
-        history_scroll = tk.Scrollbar(history_container)
-        history_scroll.pack(side="right", fill="y")
+        self.populate_history_panel(history_container, patient_id, self.get_tests_dict_for_current_area())
 
-        history_list = tk.Text(
-            history_container,
-            yscrollcommand=history_scroll.set,
-            bg="#102F4E",
-            fg=text_primary,
-            font=("Consolas", 10),
-            wrap="word",
-            relief="flat",
-            padx=14,
-            pady=14,
-            insertbackground=text_primary
-        )
-        history_list.pack(side="left", fill="both", expand=True)
-
-        history_scroll.config(command=history_list.yview)
-
-        if history_results:
-            for item in history_results:
-                test_name = AREA_3_TESTS.get(item.get("test", ""), item.get("test", "Test desconocido"))
-                line = (
-                    f"Fecha: {item.get('fecha', '-')}\n"
-                    f"Test: {test_name}\n"
-                    f"Métrica: {item.get('metrica_principal', '-')} {item.get('unidad', '-')}\n"
-                    f"Intentos: {item.get('intentos', '-')}\n"
-                    f"Archivo: {item.get('__file', '-')}\n"
-                    f"{'-' * 58}\n"
-                )
-                history_list.insert("end", line)
-        else:
-            history_list.insert(
-                "end",
-                "No se encontraron resultados previos para este paciente en la carpeta /results.\n"
-            )
-
-        history_list.config(state="disabled")
 
         bottom_wrap = tk.Frame(outer, bg=bg_main)
         bottom_wrap.pack(fill="x", side="bottom")
@@ -4082,11 +4847,12 @@ class OpenRehabApp:
 
 
     # --------------------------------------------------------
-    # LANZAR EL TEST ELEGIDO EN PYGAME
+    # SELECCIÓN DE DIFICULTAD
     # --------------------------------------------------------
+
     def launch_selected_test(self, patient_id: str):
         test_key = self.selected_test_var.get()
-
+        
         if self.current_area_key.get() == "area1":
             tests_dict = AREA_1_TESTS
         elif self.current_area_key.get() == "area2":
@@ -4095,14 +4861,97 @@ class OpenRehabApp:
             tests_dict = AREA_3_TESTS
 
         test_name = tests_dict[test_key]
+        
+        # En lugar de ejecutar, vamos a la nueva pantalla
+        self.build_difficulty_selector(patient_id, test_key, test_name)
+        
+        
+    def build_difficulty_selector(self, patient_id: str, test_key: str, test_name: str):
+        self.clear_main()
+        
+        bg_main = "#0A2540"
+        bg_card = "#163A63"
+        text_primary = "#F4F8FC"
+        btn_secondary = "#243B53"
 
+        outer = tk.Frame(self.main_container, bg=bg_main)
+        outer.pack(fill="both", expand=True)
+
+        header = tk.Frame(outer, bg=bg_main)
+        header.pack(pady=(50, 20))
+
+        tk.Label(
+            header, 
+            text="Configuración del Test", 
+            font=("Arial", 24, "bold"), 
+            fg=text_primary, bg=bg_main
+        ).pack()
+        
+        tk.Label(
+            header, 
+            text=f"Actividad: {test_name}", 
+            font=("Arial", 14), 
+            fg="#C7D9EA", bg=bg_main
+        ).pack(pady=10)
+
+        card = tk.Frame(outer, bg=bg_card, highlightthickness=1, highlightbackground="#2B5C88")
+        card.pack(pady=20, padx=50, ipadx=40, ipady=40)
+
+        tk.Label(
+            card, 
+            text="Seleccioná el nivel de dificultad", 
+            font=("Arial", 16, "bold"), 
+            fg="white", bg=bg_card
+        ).pack(pady=(0, 30))
+
+        # Estilo de botones de dificultad
+        diff_settings = [
+            ("Fácil", "#72D39A", 1),      # Texto, Color, Valor numérico
+            ("Medio", "#FBC02D", 2),
+            ("Difícil", "#F44336", 3)
+        ]
+
+        for text, color, val in diff_settings:
+            tk.Button(
+                card,
+                text=text,
+                font=("Arial", 14, "bold"),
+                bg=color,
+                fg="white",
+                width=20,
+                cursor="hand2",
+                relief="flat",
+                # Aquí llamamos a la ejecución real del juego
+                command=lambda v=val: self.execute_pygame_with_difficulty(patient_id, test_key, test_name, v)
+            ).pack(pady=10, ipady=5)
+
+        tk.Button(
+            outer,
+            text="Cancelar y volver",
+            font=("Arial", 12),
+            bg=btn_secondary,
+            fg="white",
+            relief="flat",
+            command=lambda: self.build_area_selector(patient_id)
+        ).pack(pady=20)   
+
+    def execute_pygame_with_difficulty(self, patient_id, test_key, test_name, difficulty):
+        """
+        Lanza el juego de Pygame cerrando temporalmente la ventana de Tkinter.
+        Pasa el parámetro 'difficulty' a los juegos que ya están actualizados.
+        """
+        # Ocultamos la ventana principal de Tkinter
         self.root.withdraw()
+        
         try:
+            # --- ÁREA 1: VISIÓN Y PERCEPCIÓN ---
             if test_key == "exploracion_faro":
-                    run_exploracion_faro_test(patient_id, test_key, test_name)
+                # Juego actualizado con rangos aleatorios y dificultad
+                run_exploracion_faro_test(patient_id, test_key, test_name, difficulty)
 
             elif test_key == "anclaje_visual":
-                run_anclaje_visual_test(patient_id, test_key, test_name)
+                # Juego actualizado con parpadeo y ancho variable
+                run_anclaje_visual_test(patient_id, test_key, test_name, difficulty)
 
             elif test_key == "complejidad_gradual":
                 run_complejidad_gradual_test(patient_id, test_key, test_name)
@@ -4111,11 +4960,12 @@ class OpenRehabApp:
                 run_cancelacion_estimulos_test(patient_id, test_key, test_name)
 
             elif test_key == "figura_fondo":
-                run_figura_fondo_test(patient_id, test_key, test_name)
+                run_figura_fondo_test(patient_id, test_key, test_name, difficulty)
 
             elif test_key == "acinetopsia":
-                run_acinetopsia_test(patient_id, test_key, test_name)
+                run_acinetopsia_test(patient_id, test_key, test_name, difficulty)
 
+            # --- ÁREA 2: CONTROL MOTOR Y ACCESO ---
             elif test_key == "estabilizador_trayectoria":
                 run_estabilizador_trayectoria_test(patient_id, test_key, test_name)
 
@@ -4134,7 +4984,7 @@ class OpenRehabApp:
             elif test_key == "ganancia_adaptativa":
                 run_ganancia_adaptativa_test(patient_id, test_key, test_name)
 
-
+            # --- ÁREA 3: COGNICIÓN Y LENGUAJE ---
             elif test_key == "denominacion_fonologica":
                 run_denominacion_fonologica_test(patient_id, test_key, test_name)
 
@@ -4153,21 +5003,21 @@ class OpenRehabApp:
             elif test_key == "secuenciacion_avd":
                 run_secuenciacion_avd_test(patient_id, test_key, test_name)
 
-
             else:
+                # Caso por defecto si el test no tiene una función específica
                 run_pygame_test(patient_id, test_key, test_name)
 
         finally:
-        
+            # Volvemos a mostrar la ventana de Tkinter al cerrar Pygame
             self.root.deiconify()
-
+            
+            # Recargamos el menú del área correspondiente para ver los nuevos resultados
             if self.current_area_key.get() == "area1":
-                    self.build_area1_menu(patient_id)
+                self.build_area1_menu(patient_id)
             elif self.current_area_key.get() == "area2":
-                    self.build_area2_menu(patient_id)
+                self.build_area2_menu(patient_id)
             else:
-                    self.build_area3_menu(patient_id)
-
+                self.build_area3_menu(patient_id)
 
 # ============================================================
 # PUNTO DE ENTRADA

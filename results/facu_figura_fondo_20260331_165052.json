@@ -1,0 +1,16 @@
+{
+    "id_paciente": "facu",
+    "fecha": "2026-03-31 16:50:52",
+    "test": "figura_fondo",
+    "metricas": {
+        "correctas": 5,
+        "incorrectas": 0,
+        "total": 5,
+        "tiempo": 4.28,
+        "tiempo_promedio": 0.86,
+        "porcentaje": 100,
+        "rango": "EXCELENTE",
+        "msg": "¡Excelente rendimiento! Identificaste correctamente todas las figuras."
+    },
+    "intentos": 1
+}
