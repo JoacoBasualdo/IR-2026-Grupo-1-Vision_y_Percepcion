@@ -1,0 +1,16 @@
+{
+    "id_paciente": "bauti",
+    "fecha": "2026-04-09 10:54:05",
+    "test": "figura_fondo",
+    "metricas": {
+        "correctas": 5,
+        "incorrectas": 0,
+        "total": 5,
+        "tiempo": 4.22,
+        "tiempo_promedio": 0.84,
+        "porcentaje": 100,
+        "rango": "EXCELENTE",
+        "msg": "¡Excelente rendimiento! Identificaste correctamente todas las figuras."
+    },
+    "intentos": 1
+}

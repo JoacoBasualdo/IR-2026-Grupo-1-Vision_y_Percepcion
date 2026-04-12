@@ -1,0 +1,14 @@
+{
+    "id_paciente": "b",
+    "fecha": "2026-04-09 12:34:27",
+    "test": "complejidad_gradual",
+    "metricas": {
+        "tiempo_total": 8.12,
+        "reaccion_promedio": 1.35,
+        "variacion_reaccion": 0.6,
+        "porcentaje_acierto": 75.0,
+        "rango": "MUY BIEN",
+        "msg": "Buen desempeño en la búsqueda de objetivos."
+    },
+    "intentos": 1
+}
