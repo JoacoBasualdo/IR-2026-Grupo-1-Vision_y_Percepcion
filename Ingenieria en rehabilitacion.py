@@ -1611,6 +1611,13 @@ def run_acinetopsia_test(patient_id: str, test_key: str, test_name: str, difficu
     final_metrics = {}
 
     targets = []
+    
+    if difficulty == 1:
+        speed_min, speed_max = 2, 4
+    elif difficulty == 2:
+        speed_min, speed_max = 4, 7
+    else:
+        speed_min, speed_max = 7, 9
 
     def create_targets():
         nonlocal targets
@@ -1620,7 +1627,7 @@ def run_acinetopsia_test(patient_id: str, test_key: str, test_name: str, difficu
                 "x": random.randint(50, 300),
                 "y": random.randint(140, height - 70),
                 "r": random.randint(20, 30),
-                "speed": random.randint(3, 7),
+                "speed": random.randint(speed_min, speed_max),
                 "active": True
             })
 
@@ -1686,12 +1693,7 @@ def run_acinetopsia_test(patient_id: str, test_key: str, test_name: str, difficu
     def draw_playing():
         bg = 240
 
-        if difficulty == 1:
-            delta = -140
-        elif difficulty == 2:
-            delta = -80
-        else:
-            delta = -40
+        delta = -140
 
         screen.fill((bg, bg, bg))
 
