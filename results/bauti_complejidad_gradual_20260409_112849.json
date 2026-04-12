@@ -1,0 +1,9 @@
+{
+    "id_paciente": "bauti",
+    "fecha": "2026-04-09 11:28:49",
+    "test": "complejidad_gradual",
+    "metricas": {
+        "niveles_superados": 6
+    },
+    "intentos": 1
+}

@@ -1,0 +1,14 @@
+{
+    "id_paciente": "b",
+    "fecha": "2026-04-09 12:34:00",
+    "test": "complejidad_gradual",
+    "metricas": {
+        "tiempo_total": 4.32,
+        "reaccion_promedio": 0.72,
+        "variacion_reaccion": 0.11,
+        "porcentaje_acierto": 100.0,
+        "rango": "EXCELENTE",
+        "msg": "Gran precisión y velocidad de procesamiento visual."
+    },
+    "intentos": 1
+}
