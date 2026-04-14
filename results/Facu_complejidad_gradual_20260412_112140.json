@@ -1,0 +1,14 @@
+{
+    "id_paciente": "Facu",
+    "fecha": "2026-04-12 11:21:39",
+    "test": "complejidad_gradual",
+    "metricas": {
+        "tiempo_total": 5.07,
+        "reaccion_promedio": 0.85,
+        "variacion_reaccion": -0.12,
+        "porcentaje_acierto": 100.0,
+        "rango": "EXCELENTE",
+        "msg": "Gran precisión y velocidad de procesamiento visual."
+    },
+    "intentos": 1
+}

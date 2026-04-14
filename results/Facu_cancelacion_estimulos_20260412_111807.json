@@ -1,0 +1,18 @@
+{
+    "id_paciente": "Facu",
+    "fecha": "2026-04-12 11:18:07",
+    "test": "cancelacion_estimulos",
+    "metricas": {
+        "dificultad": 2,
+        "objetivos_encontrados": 24,
+        "total_objetivos": 24,
+        "clicks_erroneos": 0,
+        "tiempo_total": 11.92,
+        "proporcion_acierto_error": "24 / 0  (sin errores)",
+        "tiempo_promedio_objetivo": 0.5,
+        "porcentaje_acierto": 100.0,
+        "rango": "EXCELENTE",
+        "msg": "Muy alta precisión en la cancelación de estímulos."
+    },
+    "intentos": 1
+}
