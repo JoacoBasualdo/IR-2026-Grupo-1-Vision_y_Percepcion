@@ -1,0 +1,9 @@
+{
+    "id_paciente": "Facu",
+    "fecha": "2026-04-14 10:20:02",
+    "test": "cancelacion_estimulos",
+    "metricas": {
+        "objetivos_encontrados": 20
+    },
+    "intentos": 1
+}
