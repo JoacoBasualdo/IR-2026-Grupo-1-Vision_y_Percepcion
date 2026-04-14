@@ -1,0 +1,9 @@
+{
+    "id_paciente": "Facu",
+    "fecha": "2026-04-14 10:43:47",
+    "test": "complejidad_gradual",
+    "metricas": {
+        "niveles_superados": 6
+    },
+    "intentos": 1
+}

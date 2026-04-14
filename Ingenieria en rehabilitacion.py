@@ -2,6 +2,7 @@ import os
 #Estos import sirven para el guardado de datos
 import json
 import random
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -984,7 +985,7 @@ def run_anclaje_visual_test(patient_id: str, test_key: str, test_name: str, diff
         clock.tick(60)
     pygame.quit()
     
-def run_complejidad_gradual_test(patient_id: str, test_key: str, test_name: str):
+def run_complejidad_gradual_test(patient_id: str, test_key: str, test_name: str, difficulty: int):
     
     pygame.init()
 
@@ -1003,13 +1004,22 @@ def run_complejidad_gradual_test(patient_id: str, test_key: str, test_name: str)
     saved_path = None
     final_metric = 0
     final_unit = "niveles_superados"
-
+    show_report = False
     levels = 6
     current_level = 0
+    total_clicks = 0
+    start_ticks = None
+    start_level_ticks = 0
+    round_times = []
+    final_metrics = {}
+
+    btn_reporte = pygame.Rect(width // 2 - 220, height - 130, 210, 55)
+    btn_volver = pygame.Rect(width // 2 + 10, height - 130, 210, 55)
+    btn_cerrar = pygame.Rect(width // 2 - 100, 560, 200, 45)
 
     target_shapes = ["▲", "■", "●"]
     current_target = random.choice(target_shapes)
-
+    
     target_rect = None
     distractor_rects = []
 
@@ -1018,15 +1028,26 @@ def run_complejidad_gradual_test(patient_id: str, test_key: str, test_name: str)
         Genera un nivel con un target y varios distractores.
         A mayor nivel, más distractores y más cercanía visual.
         """
+        
         nonlocal target_rect, distractor_rects, current_target
 
         current_target = random.choice(target_shapes)
         distractor_rects = []
 
-        cols = 5 + level_index
-        rows = 3 + level_index // 2
-        cell_w = 110
-        cell_h = 90
+        if difficulty == 1:
+            base_cols = 5
+            base_rows = 3
+        elif difficulty == 2:
+            base_cols = 7
+            base_rows = 4
+        else:
+            base_cols = 9
+            base_rows = 5
+
+        cols = base_cols + level_index
+        rows = base_rows + level_index // 2
+        cell_w = min(110, (width - 240) // cols)
+        cell_h = min(90, (height - 250) // rows)
         start_x = 120
         start_y = 170
 
@@ -1035,8 +1056,11 @@ def run_complejidad_gradual_test(patient_id: str, test_key: str, test_name: str)
             for c in range(cols):
                 x = start_x + c * cell_w
                 y = start_y + r * cell_h
-                all_cells.append(pygame.Rect(x, y, 80, 60))
+                rect_w = int(cell_w * 0.7)
+                rect_h = int(cell_h * 0.7)
 
+                all_cells.append(pygame.Rect(x, y, rect_w, rect_h))
+                
         random.shuffle(all_cells)
         target_rect = all_cells[0]
 
@@ -1044,7 +1068,7 @@ def run_complejidad_gradual_test(patient_id: str, test_key: str, test_name: str)
             distractor_rects.append(rect)
 
     generate_level(current_level)
-
+    level_start_time = pygame.time.get_ticks()
     def draw_intro():
         draw_openrehab_intro_screen(
             screen,
@@ -1093,18 +1117,48 @@ def run_complejidad_gradual_test(patient_id: str, test_key: str, test_name: str)
             screen.blit(txt, (rect.x + 18, rect.y - 5))
 
     def draw_result():
-        draw_openrehab_result_screen(
-            screen,
-            width,
-            height,
-            test_name,
-            [f"Métrica principal: {final_metric} {final_unit}"],
-            action_text="ENTER para volver",
-            secondary_text="ESC para salir",
-            title="Resultado guardado",
-            badge_text="Resumen final",
-        )
+        f_hud = pygame.font.SysFont("arial", 26, bold=True)
+        f_giant = pygame.font.SysFont("arial", 80, bold=True)
+        f_button = pygame.font.SysFont("arial", 24, bold=True)
+        f_report = pygame.font.SysFont("arial", 22)
+        
+        screen.fill((10, 37, 64)) 
 
+        if not show_report:
+            txt_surf = f_giant.render(final_metrics.get("rango", ""), True, (114, 211, 154))
+            screen.blit(txt_surf, (width // 2 - txt_surf.get_width() // 2, 220))
+
+            msg_surf = f_hud.render(final_metrics.get("msg", ""), True, (199, 217, 234))
+            screen.blit(msg_surf, (width // 2 - msg_surf.get_width() // 2, 340))
+
+            for rect, label, col in [(btn_reporte, "VER INFORME", (79, 195, 247)), (btn_volver, "VOLVER", (36, 72, 110))]:
+                pygame.draw.rect(screen, col, rect, border_radius=12)
+                t_s = f_button.render(label, True, (255, 255, 255))
+                screen.blit(t_s, t_s.get_rect(center=rect.center))
+        else:
+            p_rect = pygame.Rect(width // 2 - 300, 150, 600, 480)
+            pygame.draw.rect(screen, (244, 248, 252), p_rect, border_radius=20)
+            pygame.draw.rect(screen, (43, 92, 136), p_rect, 3, border_radius=20)
+
+            t_surf = f_button.render("INFORME DE COMPLEJIDAD GRADUAL", True, (10, 37, 64))
+            screen.blit(t_surf, (width // 2 - t_surf.get_width() // 2, 180))
+
+            # Las métricas que pediste:
+            lines = [
+                f"Tiempo Total de Prueba: {final_metrics.get('tiempo_total')}s",
+                f"Tiempo Reacción Promedio: {final_metrics.get('reaccion_promedio')}s",
+                f"Variación (Nivel 1 vs Final): {final_metrics.get('variacion_reaccion')}s",
+                f"Porcentaje Clicks Acertados: {final_metrics.get('porcentaje_acierto')}%",
+                f"Niveles Superados: 6/6"
+            ]
+            for i, line in enumerate(lines):
+                l_surf = f_report.render(line, True, (36, 72, 110))
+                screen.blit(l_surf, (width // 2 - 230, 260 + (i * 50)))
+
+            pygame.draw.rect(screen, (180, 50, 50), btn_cerrar, border_radius=10)
+            c_surf = f_button.render("CERRAR", True, (255, 255, 255))
+            screen.blit(c_surf, c_surf.get_rect(center=btn_cerrar.center))
+            
     running = True
 
     while running:
@@ -1120,28 +1174,56 @@ def run_complejidad_gradual_test(patient_id: str, test_key: str, test_name: str)
 
                 elif state == "intro" and event.key == pygame.K_SPACE:
                     state = "playing"
+                    show_report = False
+                    total_clicks = 0
+                    round_times = []
+                    start_ticks = pygame.time.get_ticks()
+                    start_level_ticks = pygame.time.get_ticks()
 
-                elif state == "result" and event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                elif state == "result" and event.key == pygame.K_RETURN and not show_report:
                     running = False
 
-            elif event.type == pygame.MOUSEBUTTONDOWN and state == "playing":
+            elif event.type == pygame.MOUSEBUTTONDOWN:
+                mx, my = event.pos
+                if state == "playing":
+                    total_clicks += 1
+                    if target_rect.collidepoint(mx, my):
+                        ahora = pygame.time.get_ticks()
+                        duracion_nivel = (ahora - start_level_ticks) / 1000
+                        round_times.append(duracion_nivel)
+                        start_level_ticks = ahora
+                        current_level += 1
 
-                mouse_x, mouse_y = event.pos
+                        if current_level >= levels:
+                            tiempo_total = (pygame.time.get_ticks() - start_ticks) / 1000
+                            avg_reaccion = round(tiempo_total / 6, 2)
+                            variacion = round(round_times[-1] - round_times[0], 2)
+                            porcentaje_acierto = round((6 / total_clicks) * 100, 1) if total_clicks > 0 else 0
+                        
+                            if porcentaje_acierto > 85: rango, msg = "EXCELENTE", "Gran precisión y velocidad de procesamiento visual."
+                            elif porcentaje_acierto > 60: rango, msg = "MUY BIEN", "Buen desempeño en la búsqueda de objetivos."
+                            else: rango, msg = "SIGUE ASÍ", "La práctica constante mejorará tu atención selectiva."
 
-                if target_rect.collidepoint(mouse_x, mouse_y):
-                    current_level += 1
+                            final_metrics = {
+                                "tiempo_total": round(tiempo_total, 2),
+                                "reaccion_promedio": avg_reaccion,
+                                "variacion_reaccion": variacion,
+                                "porcentaje_acierto": porcentaje_acierto,
+                                "rango": rango,
+                                "msg": msg
+                            }
+                            save_result_json(patient_id, test_key, final_metrics, attempts)
+                            state = "result"
+                        else:
+                            generate_level(current_level)
 
-                    if current_level >= levels:
-                        final_metric = levels
-                        saved_path = save_result_json(
-                            patient_id,
-                            test_key,
-                            {"niveles_superados": final_metric},
-                            attempts
-                        )
-                        state = "result"
-                    else:
-                        generate_level(current_level)
+                elif state == "result":
+                    if btn_reporte.collidepoint(mx, my) and not show_report:
+                        show_report = True
+                    elif btn_volver.collidepoint(mx, my) and not show_report:
+                        running = False
+                    elif btn_cerrar.collidepoint(mx, my) and show_report:
+                        show_report = False
 
         if state == "intro":
             draw_intro()
@@ -1155,7 +1237,7 @@ def run_complejidad_gradual_test(patient_id: str, test_key: str, test_name: str)
 
     pygame.quit()
 
-def run_cancelacion_estimulos_test(patient_id: str, test_key: str, test_name: str):
+def run_cancelacion_estimulos_test(patient_id: str, test_key: str, test_name: str, difficulty: int):
     
     pygame.init()
 
@@ -1164,65 +1246,113 @@ def run_cancelacion_estimulos_test(patient_id: str, test_key: str, test_name: st
     pygame.display.set_caption(f"{APP_TITLE} - {test_name}")
 
     clock = pygame.time.Clock()
+    font       = pygame.font.SysFont("arial", 24)
+    cell_font  = pygame.font.SysFont("arial", 34, bold=True)
+    f_button   = pygame.font.SysFont("arial", 24, bold=True)
+    f_report   = pygame.font.SysFont("arial", 22)
+    f_giant    = pygame.font.SysFont("arial", 72, bold=True)
 
-    title_font = pygame.font.SysFont("arial", 34, bold=True)
-    font = pygame.font.SysFont("arial", 24)
-    cell_font = pygame.font.SysFont("arial", 34, bold=True)
 
-    state = "intro"
-    attempts = 1
-    final_metric = 0
-    final_unit = "objetivos_encontrados"
+   # ── CONFIGURACIÓN POR DIFICULTAD ─────────────────────────────────────────
+    rows = 7
+    cols = 10
 
-    rows, cols = 7, 10
+    if difficulty == 1:
+        targets_goal = 28
+    elif difficulty == 2:
+        targets_goal = 24
+    else:
+        targets_goal = 18
+
     cell_size = 70
-    start_x = 130
-    start_y = 150
+    start_x   = (width - cols * cell_size) // 2
+    start_y   = 150
 
-    grid = []
+    # Botones pantalla resultado (igual que complejidad gradual)
+    btn_reporte = pygame.Rect(width // 2 - 220, height - 130, 210, 55)
+    btn_volver  = pygame.Rect(width // 2 + 10,  height - 130, 210, 55)
+    btn_cerrar  = pygame.Rect(width // 2 - 100, 560, 200, 45)
+
+    # ── ESTADO ───────────────────────────────────────────────────────────────
+    state         = "intro"
+    attempts      = 1
+    show_report   = False
+    grid          = []
     total_targets = 0
     found_targets = 0
+    wrong_clicks  = 0
+    start_time    = None
+    final_metrics = {}
 
+    # ── GENERACIÓN DE GRILLA ─────────────────────────────────────────────────
     def generate_grid():
-        """
-        Genera una matriz de símbolos con objetivos X y distractores O.
-        """
         nonlocal grid, total_targets
+
+        # Crear lista de celdas: primero N targets, luego el resto distractores
+        total_cells = rows * cols
+        target_count = min(targets_goal, total_cells)
+        symbols = ["X"] * target_count + ["O"] * (total_cells - target_count)
+        random.shuffle(symbols)
 
         grid = []
         total_targets = 0
-
+        idx = 0
         for r in range(rows):
             row = []
             for c in range(cols):
-                is_target = random.random() < 0.28
-                symbol = "X" if is_target else "O"
-                if is_target:
+                symbol = symbols[idx]; idx += 1
+                if symbol == "X":
                     total_targets += 1
-
                 rect = pygame.Rect(
                     start_x + c * cell_size,
                     start_y + r * cell_size,
                     cell_size - 8,
-                    cell_size - 8
+                    cell_size - 8,
                 )
-
-                row.append({
-                    "symbol": symbol,
-                    "clicked": False,
-                    "rect": rect
-                })
+                row.append({"symbol": symbol, "clicked": False, "rect": rect})
             grid.append(row)
 
     generate_grid()
 
+    # ── MÉTRICAS ─────────────────────────────────────────────────────────────
+    def compute_metrics():
+        tiempo_total = round(time.time() - start_time, 2)
+        tiempo_prom  = round(tiempo_total / found_targets, 2) if found_targets > 0 else 0
+
+        if wrong_clicks == 0:
+            proporcion = f"{found_targets} / 0  (sin errores)"
+        else:
+            ratio      = round(found_targets / wrong_clicks, 2)
+            proporcion = f"{found_targets} / {wrong_clicks}  (ratio {ratio})"
+
+        total_clicks = found_targets + wrong_clicks
+        porcentaje   = round((found_targets / total_clicks) * 100, 1) if total_clicks > 0 else 100.0
+
+        if porcentaje >= 90:
+            rango, msg = "EXCELENTE", "Muy alta precisión en la cancelación de estímulos."
+        elif porcentaje >= 70:
+            rango, msg = "MUY BIEN", "Buen desempeño en la identificación de objetivos."
+        else:
+            rango, msg = "SIGUE ASÍ", "La práctica mejorará tu atención selectiva."
+
+        return {
+            "dificultad":               difficulty,
+            "objetivos_encontrados":    found_targets,
+            "total_objetivos":          total_targets,
+            "clicks_erroneos":          wrong_clicks,
+            "tiempo_total":             tiempo_total,
+            "proporcion_acierto_error": proporcion,
+            "tiempo_promedio_objetivo": tiempo_prom,
+            "porcentaje_acierto":       porcentaje,
+            "rango":                    rango,
+            "msg":                      msg,
+        }
+
+    # ── PANTALLAS ─────────────────────────────────────────────────────────────
     def draw_intro():
+        # Sin mención de dificultad en las instrucciones
         draw_openrehab_intro_screen(
-            screen,
-            width,
-            height,
-            test_name,
-            patient_id,
+            screen, width, height, test_name, patient_id,
             ["Hacé click en todas las X de la matriz."],
             start_text="ESPACIO para comenzar",
             back_text="ESC para volver al menú",
@@ -1231,44 +1361,78 @@ def run_cancelacion_estimulos_test(patient_id: str, test_key: str, test_name: st
 
     def draw_playing():
         screen.fill((245, 245, 245))
-
         pygame.draw.rect(screen, (30, 30, 30), pygame.Rect(0, 0, width, 90))
 
-        h1 = font.render(f"Objetivos encontrados: {found_targets}/{total_targets}", True, (255, 255, 255))
-        h2 = font.render("Objetivo: clickear todas las X", True, (255, 230, 120))
-
+        h1 = font.render(
+            f"Encontrados: {found_targets}/{total_targets}  |  Errores: {wrong_clicks}",
+            True, (255, 255, 255)
+        )
+        h2 = font.render("Objetivo: clickeá todas las X", True, (255, 230, 120))
         screen.blit(h1, (20, 18))
-        screen.blit(h2, (20, 52))
+        screen.blit(h2, (20, 54))
 
         for row in grid:
             for cell in row:
-                color = (230, 230, 230)
                 if cell["clicked"] and cell["symbol"] == "X":
                     color = (140, 220, 140)
                 elif cell["clicked"] and cell["symbol"] != "X":
                     color = (235, 140, 140)
+                else:
+                    color = (230, 230, 230)
 
-                pygame.draw.rect(screen, color, cell["rect"], border_radius=8)
+                pygame.draw.rect(screen, color,        cell["rect"], border_radius=8)
                 pygame.draw.rect(screen, (50, 50, 50), cell["rect"], 2, border_radius=8)
 
                 txt = cell_font.render(cell["symbol"], True, (20, 20, 20))
                 screen.blit(txt, (cell["rect"].x + 20, cell["rect"].y + 10))
 
     def draw_result():
-        draw_openrehab_result_screen(
-            screen,
-            width,
-            height,
-            test_name,
-            [f"Métrica principal: {final_metric} {final_unit}"],
-            action_text="ENTER para volver",
-            secondary_text="ESC para salir",
-            title="Resultado guardado",
-            badge_text="Resumen final",
-        )
+        screen.fill((10, 37, 64))
 
+        if not show_report:
+            # ── Vista resumen ────────────────────────────────────────────────
+            rango_surf = f_giant.render(final_metrics.get("rango", ""), True, (114, 211, 154))
+            screen.blit(rango_surf, (width // 2 - rango_surf.get_width() // 2, 200))
+
+            msg_surf = font.render(final_metrics.get("msg", ""), True, (199, 217, 234))
+            screen.blit(msg_surf, (width // 2 - msg_surf.get_width() // 2, 310))
+
+            for rect, label, col in [
+                (btn_reporte, "VER INFORME", (79, 195, 247)),
+                (btn_volver,  "VOLVER",      (36, 72, 110)),
+            ]:
+                pygame.draw.rect(screen, col, rect, border_radius=12)
+                t = f_button.render(label, True, (255, 255, 255))
+                screen.blit(t, t.get_rect(center=rect.center))
+
+        else:
+            # ── Vista informe detallado ──────────────────────────────────────
+            p_rect = pygame.Rect(width // 2 - 320, 120, 640, 500)
+            pygame.draw.rect(screen, (244, 248, 252), p_rect, border_radius=20)
+            pygame.draw.rect(screen, (43, 92, 136),   p_rect, 3, border_radius=20)
+
+            title_surf = f_button.render("INFORME — CANCELACIÓN DE ESTÍMULOS", True, (10, 37, 64))
+            screen.blit(title_surf, (width // 2 - title_surf.get_width() // 2, 150))
+
+            lines = [
+                f"Dificultad: {final_metrics.get('dificultad', '-')}",
+                f"Objetivos encontrados: {final_metrics.get('objetivos_encontrados', 0)} / {final_metrics.get('total_objetivos', 0)}",
+                f"Clicks erróneos: {final_metrics.get('clicks_erroneos', 0)}",
+                f"Tiempo de compleción: {final_metrics.get('tiempo_total', 0)}s",
+                f"Aciertos / Errores: {final_metrics.get('proporcion_acierto_error', '-')}",
+                f"Tiempo promedio por objetivo: {final_metrics.get('tiempo_promedio_objetivo', 0)}s",
+                f"Porcentaje de acierto: {final_metrics.get('porcentaje_acierto', 0)}%",
+            ]
+            for i, line in enumerate(lines):
+                l_surf = f_report.render(line, True, (36, 72, 110))
+                screen.blit(l_surf, (width // 2 - 270, 210 + i * 44))
+
+            pygame.draw.rect(screen, (180, 50, 50), btn_cerrar, border_radius=10)
+            c_surf = f_button.render("CERRAR", True, (255, 255, 255))
+            screen.blit(c_surf, c_surf.get_rect(center=btn_cerrar.center))
+
+    # ── LOOP PRINCIPAL ────────────────────────────────────────────────────────
     running = True
-
     while running:
         for event in pygame.event.get():
 
@@ -1276,37 +1440,40 @@ def run_cancelacion_estimulos_test(patient_id: str, test_key: str, test_name: st
                 running = False
 
             elif event.type == pygame.KEYDOWN:
-
                 if event.key == pygame.K_ESCAPE:
                     running = False
-
                 elif state == "intro" and event.key == pygame.K_SPACE:
-                    state = "playing"
-
-                elif state == "result" and event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                    state      = "playing"
+                    start_time = time.time()
+                elif state == "result" and event.key == pygame.K_RETURN and not show_report:
                     running = False
 
-            elif event.type == pygame.MOUSEBUTTONDOWN and state == "playing":
+            elif event.type == pygame.MOUSEBUTTONDOWN:
+                mx, my = event.pos
 
-                mouse_x, mouse_y = event.pos
+                if state == "playing":
+                    for row in grid:
+                        for cell in row:
+                            if cell["rect"].collidepoint(mx, my) and not cell["clicked"]:
+                                cell["clicked"] = True
+                                if cell["symbol"] == "X":
+                                    found_targets += 1
+                                else:
+                                    wrong_clicks += 1
 
-                for row in grid:
-                    for cell in row:
-                        if cell["rect"].collidepoint(mouse_x, mouse_y) and not cell["clicked"]:
-                            cell["clicked"] = True
-                            if cell["symbol"] == "X":
-                                found_targets += 1
+                elif state == "result":
+                    if btn_reporte.collidepoint(mx, my) and not show_report:
+                        show_report = True
+                    elif btn_volver.collidepoint(mx, my) and not show_report:
+                        running = False
+                    elif btn_cerrar.collidepoint(mx, my) and show_report:
+                        show_report = False
 
-        if state == "playing":
-            if found_targets >= total_targets:
-                final_metric = found_targets
-                save_result_json(
-                    patient_id,
-                    test_key,
-                    {final_unit: final_metric},
-                    attempts
-                )
-                state = "result"
+        # ── Fin de partida ────────────────────────────────────────────────────
+        if state == "playing" and found_targets >= total_targets:
+            final_metrics = compute_metrics()
+            save_result_json(patient_id, test_key, final_metrics, attempts)
+            state = "result"
 
         if state == "intro":
             draw_intro()
@@ -1319,7 +1486,6 @@ def run_cancelacion_estimulos_test(patient_id: str, test_key: str, test_name: st
         clock.tick(60)
 
     pygame.quit()
-
 
 
 def run_figura_fondo_test(patient_id: str, test_key: str, test_name: str, difficulty: int):
@@ -1357,6 +1523,8 @@ def run_figura_fondo_test(patient_id: str, test_key: str, test_name: str, diffic
     btn_volver = pygame.Rect(width // 2 + 10, height - 130, 210, 55)
     btn_cerrar = pygame.Rect(width // 2 - 100, 560, 200, 45)
 
+    target_shape = "rect"
+    
     def generate_round():
         nonlocal target_rect, buttons, target_shape
 
@@ -1717,6 +1885,12 @@ def run_acinetopsia_test(patient_id: str, test_key: str, test_name: str, difficu
                 pygame.draw.circle(screen, circle_color, (int(target["x"]), int(target["y"])), target["r"])
                 pygame.draw.circle(screen, border_color, (int(target["x"]), int(target["y"])), target["r"], 2)
 
+                # el borde tiene MENOS contraste que el relleno
+                border_delta = int(delta * 0.5)
+                border_color = tuple(max(0, min(255, bg + border_delta)) for _ in range(3))
+
+                pygame.draw.circle(screen, circle_color, (int(target["x"]), int(target["y"])), target["r"])
+                pygame.draw.circle(screen, border_color, (int(target["x"]), int(target["y"])), target["r"], 2)
     def draw_result():
         screen.fill((10, 37, 64))
 
@@ -4956,10 +5130,10 @@ class OpenRehabApp:
                 run_anclaje_visual_test(patient_id, test_key, test_name, difficulty)
 
             elif test_key == "complejidad_gradual":
-                run_complejidad_gradual_test(patient_id, test_key, test_name)
+                run_complejidad_gradual_test(patient_id, test_key, test_name, difficulty)
 
             elif test_key == "cancelacion_estimulos":
-                run_cancelacion_estimulos_test(patient_id, test_key, test_name)
+                run_cancelacion_estimulos_test(patient_id, test_key, test_name, difficulty)
 
             elif test_key == "figura_fondo":
                 run_figura_fondo_test(patient_id, test_key, test_name, difficulty)
