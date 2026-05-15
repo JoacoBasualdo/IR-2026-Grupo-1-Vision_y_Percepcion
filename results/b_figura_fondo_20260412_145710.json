@@ -1,0 +1,16 @@
+{
+    "id_paciente": "b",
+    "fecha": "2026-04-12 14:57:10",
+    "test": "figura_fondo",
+    "metricas": {
+        "correctas": 3,
+        "incorrectas": 2,
+        "total": 5,
+        "tiempo": 6.89,
+        "tiempo_promedio": 1.38,
+        "porcentaje": 60,
+        "rango": "BIEN HECHO",
+        "msg": "Buen desempeño. Lograste reconocer más de la mitad de las figuras."
+    },
+    "intentos": 1
+}

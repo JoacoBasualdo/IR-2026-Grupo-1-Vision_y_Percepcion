@@ -1,0 +1,18 @@
+{
+    "id_paciente": "b",
+    "fecha": "2026-04-12 17:05:57",
+    "test": "cancelacion_estimulos",
+    "metricas": {
+        "dificultad": 1,
+        "objetivos_encontrados": 28,
+        "total_objetivos": 28,
+        "clicks_erroneos": 0,
+        "tiempo_total": 17.12,
+        "proporcion_acierto_error": "28 / 0  (sin errores)",
+        "tiempo_promedio_objetivo": 0.61,
+        "porcentaje_acierto": 100.0,
+        "rango": "EXCELENTE",
+        "msg": "Muy alta precisión en la cancelación de estímulos."
+    },
+    "intentos": 1
+}

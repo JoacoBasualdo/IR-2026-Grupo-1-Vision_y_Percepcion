@@ -1,0 +1,16 @@
+{
+    "id_paciente": "bauti",
+    "fecha": "2026-04-09 11:52:34",
+    "test": "figura_fondo",
+    "metricas": {
+        "correctas": 2,
+        "incorrectas": 3,
+        "total": 5,
+        "tiempo": 4.39,
+        "tiempo_promedio": 0.88,
+        "porcentaje": 40,
+        "rango": "SIGUE ASÍ",
+        "msg": "Vas avanzando. Conviene seguir practicando la discriminación figura-fondo."
+    },
+    "intentos": 1
+}

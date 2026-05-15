@@ -1,0 +1,9 @@
+{
+    "id_paciente": "bauti",
+    "fecha": "2026-04-09 11:03:46",
+    "test": "cancelacion_estimulos",
+    "metricas": {
+        "objetivos_encontrados": 13
+    },
+    "intentos": 1
+}

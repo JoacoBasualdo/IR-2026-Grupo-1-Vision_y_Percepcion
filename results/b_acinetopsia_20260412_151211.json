@@ -1,0 +1,18 @@
+{
+    "id_paciente": "b",
+    "fecha": "2026-04-12 15:12:11",
+    "test": "acinetopsia",
+    "metricas": {
+        "encontrados": 8,
+        "total": 8,
+        "no_encontrados": 0,
+        "tiempo": 5.23,
+        "tiempo_promedio": 0.65,
+        "clicks_totales": 9,
+        "misclicks": 1,
+        "porcentaje": 100,
+        "rango": "EXCELENTE",
+        "msg": "¡Excelente rendimiento! Marcaste correctamente todos los objetivos."
+    },
+    "intentos": 1
+}

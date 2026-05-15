@@ -1,0 +1,13 @@
+{
+    "id_paciente": "bauti",
+    "fecha": "2026-04-09 12:08:37",
+    "test": "complejidad_gradual",
+    "metricas": {
+        "tiempo_total": 5.09,
+        "reaccion_promedio": 0.85,
+        "variacion_reaccion": -0.02,
+        "porcentaje_acierto": 85.7,
+        "niveles_superados": 6
+    },
+    "intentos": 1
+}
